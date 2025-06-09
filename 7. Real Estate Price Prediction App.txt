@@ -1,0 +1,291 @@
+# --- Part 1: Data Generation (Python Script - run once to generate and save data) ---
+# This part of the code simulates a dataset that a real estate price prediction
+# app would typically use. In a real project, you would replace this with
+# actual data collection from APIs, public datasets, or web scraping.
+
+import pandas as pd
+import numpy as np
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler, OneHotEncoder
+from sklearn.compose import ColumnTransformer
+from sklearn.pipeline import Pipeline
+import xgboost as xgb
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+import joblib # For saving/loading models and scalers
+import os
+import folium # For optional map visualization in Streamlit
+
+print("--- Data Generation, Preprocessing, and Model Training Script ---")
+
+# Ensure a data directory exists
+DATA_DIR = 'data'
+if not os.path.exists(DATA_DIR):
+    os.makedirs(DATA_DIR)
+
+def generate_real_estate_data(num_properties=5000):
+    """
+    Generates a synthetic dataset for real estate price prediction.
+    Includes property features, simulated geographical coordinates,
+    and simulated distances to points of interest (POIs).
+    """
+    np.random.seed(42) # for reproducibility
+
+    data = {
+        'num_bedrooms': np.random.randint(1, 6, num_properties),
+        'num_bathrooms': np.random.randint(1, 4, num_properties),
+        'sq_footage': np.random.randint(800, 5000, num_properties),
+        'year_built': np.random.randint(1950, 2023, num_properties),
+        'property_type': np.random.choice(['House', 'Apartment', 'Condo'], num_properties, p=[0.6, 0.3, 0.1]),
+        'has_garden': np.random.choice([0, 1], num_properties, p=[0.7, 0.3]),
+        'has_parking': np.random.choice([0, 1], num_properties, p=[0.2, 0.8]),
+        # Simulate latitude and longitude within a realistic range for a city-like area
+        'latitude': np.random.uniform(34.0, 34.5, num_properties),
+        'longitude': np.random.uniform(-118.5, -118.0, num_properties),
+    }
+    df = pd.DataFrame(data)
+
+    # Simulate POIs and calculate distances (spatial features)
+    # Simulate a few "school zones" or "hospital zones"
+    school_pois = np.array([
+        (34.1, -118.1), (34.3, -118.3), (34.05, -118.45)
+    ])
+    hospital_pois = np.array([
+        (34.2, -118.2), (34.4, -118.05)
+    ])
+    park_pois = np.array([
+        (34.02, -118.01), (34.48, -118.48), (34.25, -118.25)
+    ])
+
+    df['dist_to_school'] = df.apply(lambda row: np.min(np.sqrt((row['latitude'] - school_pois[:,0])**2 + (row['longitude'] - school_pois[:,1])**2)), axis=1) * 111.32 # Convert degrees to km approx
+    df['dist_to_hospital'] = df.apply(lambda row: np.min(np.sqrt((row['latitude'] - hospital_pois[:,0])**2 + (row['longitude'] - hospital_pois[:,1])**2)), axis=1) * 111.32
+    df['dist_to_park'] = df.apply(lambda row: np.min(np.sqrt((row['latitude'] - park_pois[:,0])**2 + (row['longitude'] - park_pois[:,1])**2)), axis=1) * 111.32
+    
+    # Simulate price based on features (simplified linear relationship + noise)
+    # Price depends positively on sq_footage, bedrooms, bathrooms, garden/parking,
+    # and negatively on year_built (older), and positively on proximity to amenities.
+    df['price'] = (
+        50 * df['sq_footage'] +
+        50000 * df['num_bedrooms'] +
+        75000 * df['num_bathrooms'] +
+        (2025 - df['year_built']) * -1000 + # Older reduces price
+        50000 * df['has_garden'] +
+        30000 * df['has_parking'] +
+        (10 - df['dist_to_school']) * 20000 + # Closer to school increases price
+        (10 - df['dist_to_hospital']) * 15000 +
+        (10 - df['dist_to_park']) * 10000 +
+        np.random.normal(0, 75000, num_properties) # Add noise
+    )
+    
+    # Adjust price based on property type (e.g., houses generally more expensive)
+    df.loc[df['property_type'] == 'Apartment', 'price'] *= 0.8
+    df.loc[df['property_type'] == 'Condo', 'price'] *= 0.7
+    
+    # Ensure prices are positive and somewhat realistic
+    df['price'] = np.clip(df['price'], 100000, 2000000).astype(int)
+
+    return df
+
+print("Generating synthetic real estate data...")
+real_estate_df = generate_real_estate_data()
+print("Generated Data Head:")
+print(real_estate_df.head())
+print(f"\nTotal properties generated: {len(real_estate_df)}")
+
+# --- Part 2: Data Preprocessing & Feature Engineering ---
+# Define categorical and numerical features
+categorical_features = ['property_type']
+numerical_features = [
+    'num_bedrooms', 'num_bathrooms', 'sq_footage', 'year_built',
+    'has_garden', 'has_parking',
+    'latitude', 'longitude', # Treat lat/long as numerical features
+    'dist_to_school', 'dist_to_hospital', 'dist_to_park'
+]
+
+# Create a preprocessor using ColumnTransformer
+# Numerical features are scaled using StandardScaler
+# Categorical features are one-hot encoded
+preprocessor = ColumnTransformer(
+    transformers=[
+        ('num', StandardScaler(), numerical_features),
+        ('cat', OneHotEncoder(handle_unknown='ignore'), categorical_features)
+    ])
+
+print("\nSplitting data and setting up preprocessor...")
+# Split data into features (X) and target (y)
+X = real_estate_df.drop('price', axis=1)
+y = real_estate_df['price']
+
+# Split into training and test sets
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+print(f"X_train shape: {X_train.shape}, y_train shape: {y_train.shape}")
+print(f"X_test shape: {X_test.shape}, y_test shape: {y_test.shape}")
+
+# --- Part 3: Model Training ---
+print("\nTraining XGBoost model...")
+
+# Create the XGBoost Regressor model
+# Using a simple set of hyperparameters, these can be tuned further
+xgb_model = xgb.XGBRegressor(
+    objective='reg:squarederror', # For regression tasks
+    n_estimators=1000,           # Number of boosting rounds
+    learning_rate=0.05,          # Step size shrinkage
+    max_depth=5,                 # Maximum depth of a tree
+    subsample=0.8,               # Subsample ratio of the training instance
+    colsample_bytree=0.8,        # Subsample ratio of columns when constructing each tree
+    random_state=42,
+    n_jobs=-1                    # Use all available CPU cores
+)
+
+# Create a pipeline that first preprocesses the data then trains the model
+model_pipeline = Pipeline(steps=[('preprocessor', preprocessor),
+                               ('regressor', xgb_model)])
+
+# Train the pipeline
+model_pipeline.fit(X_train, y_train)
+
+print("Model training complete.")
+
+# --- Model Evaluation ---
+print("\nEvaluating model performance...")
+y_pred = model_pipeline.predict(X_test)
+
+mae = mean_absolute_error(y_test, y_pred)
+rmse = np.sqrt(mean_squared_error(y_test, y_pred))
+r2 = r2_score(y_test, y_pred)
+
+print(f"Mean Absolute Error (MAE): ${mae:,.2f}")
+print(f"Root Mean Squared Error (RMSE): ${rmse:,.2f}")
+print(f"R-squared (R2): {r2:.4f}")
+
+# --- Save Model and Preprocessor ---
+# Save the entire pipeline (preprocessor + model)
+model_path = os.path.join(DATA_DIR, 'real_estate_predictor_pipeline.pkl')
+joblib.dump(model_pipeline, model_path)
+print(f"\nModel pipeline saved to {model_path}")
+
+# --- Part 4: Streamlit Application (app.py) ---
+# This part of the code would typically be in a separate file named `app.py`
+# and run using `streamlit run app.py` command.
+
+streamlit_app_code = """
+import streamlit as st
+import pandas as pd
+import numpy as np
+import joblib
+import os
+import folium
+from folium.plugins import MarkerCluster
+
+# --- Load Model and Data (Cached for performance) ---
+@st.cache_resource # Use st.cache_resource for loading heavy objects like models
+def load_resources():
+    try:
+        model_path = os.path.join('data', 'real_estate_predictor_pipeline.pkl')
+        model = joblib.load(model_path)
+        return model
+    except FileNotFoundError:
+        st.error("Model file not found. Please ensure 'real_estate_predictor_pipeline.pkl' is in the 'data/' directory.")
+        st.stop() # Stop execution if model isn't found
+    except Exception as e:
+        st.error(f"Error loading model: {e}")
+        st.stop()
+
+model = load_resources()
+
+# --- Streamlit UI ---
+st.set_page_config(layout="wide", page_title="Real Estate Price Predictor")
+
+st.title("🏡 Real Estate Price Prediction App")
+st.markdown("---")
+
+st.sidebar.header("Enter Property Details")
+
+# Input fields for features
+num_bedrooms = st.sidebar.slider("Number of Bedrooms", 1, 6, 3)
+num_bathrooms = st.sidebar.slider("Number of Bathrooms", 1, 4, 2)
+sq_footage = st.sidebar.slider("Square Footage", 800, 5000, 1800, step=50)
+year_built = st.sidebar.slider("Year Built", 1950, 2023, 1990)
+property_type = st.sidebar.selectbox("Property Type", ['House', 'Apartment', 'Condo'])
+has_garden = st.sidebar.checkbox("Has Garden?")
+has_parking = st.sidebar.checkbox("Has Parking?")
+
+# Geographical inputs (can be derived from address in a real app, but simulated here)
+st.sidebar.subheader("Location Details (Simulated)")
+latitude = st.sidebar.number_input("Latitude", value=34.2, format="%.5f")
+longitude = st.sidebar.number_input("Longitude", value=-118.2, format="%.5f")
+
+# Simulate distances to POIs (these would be calculated from real lat/long and POI data)
+# For simplicity in the app, we'll use fixed values or user inputs if needed.
+# In a real app, you'd calculate these on the fly or fetch from a service.
+st.sidebar.subheader("Proximity to Amenities (Simulated)")
+dist_to_school = st.sidebar.slider("Distance to Nearest School (km)", 0.5, 20.0, 2.0, step=0.1)
+dist_to_hospital = st.sidebar.slider("Distance to Nearest Hospital (km)", 0.5, 20.0, 3.5, step=0.1)
+dist_to_park = st.sidebar.slider("Distance to Nearest Park (km)", 0.5, 20.0, 1.0, step=0.1)
+
+# Create a DataFrame for the new input
+input_data = pd.DataFrame({
+    'num_bedrooms': [num_bedrooms],
+    'num_bathrooms': [num_bathrooms],
+    'sq_footage': [sq_footage],
+    'year_built': [year_built],
+    'property_type': [property_type],
+    'has_garden': [1 if has_garden else 0],
+    'has_parking': [1 if has_parking else 0],
+    'latitude': [latitude],
+    'longitude': [longitude],
+    'dist_to_school': [dist_to_school],
+    'dist_to_hospital': [dist_to_hospital],
+    'dist_to_park': [dist_to_park]
+})
+
+# --- Prediction Button ---
+if st.sidebar.button("Predict Price"):
+    try:
+        predicted_price = model.predict(input_data)[0]
+        st.success(f"### Predicted Property Price: ${predicted_price:,.2f}")
+        st.balloons()
+    except Exception as e:
+        st.error(f"An error occurred during prediction: {e}")
+
+st.markdown("---")
+
+# --- Interactive Map Visualization (Optional) ---
+st.subheader("Property Location")
+
+# Create a Folium map centered at the input latitude/longitude
+m = folium.Map(location=[latitude, longitude], zoom_start=14)
+
+# Add a marker for the property
+folium.Marker([latitude, longitude], popup="Your Property").add_to(m)
+
+# Simulate nearby amenities for visualization purposes
+# In a real app, you'd fetch actual POIs or use pre-calculated ones
+if st.checkbox("Show Simulated Nearby Amenities"):
+    amenity_locations = [
+        (latitude + 0.01, longitude + 0.01, "School"),
+        (latitude - 0.005, longitude + 0.02, "Hospital"),
+        (latitude + 0.02, longitude - 0.015, "Park"),
+        (latitude - 0.01, longitude - 0.02, "Shopping Center")
+    ]
+    
+    marker_cluster = MarkerCluster().add_to(m)
+    for lat, lon, name in amenity_locations:
+        folium.Marker([lat, lon], popup=f"Simulated {name}").add_to(marker_cluster)
+
+# Display the map in Streamlit
+st_data = st_folium(m, width=700, height=500)
+
+st.markdown("---")
+st.info("This app uses a synthetic dataset and simulated spatial features for demonstration. For real-world accuracy, it would require actual real estate data and precise geospatial calculations.")
+
+"""
+
+# Write the Streamlit app code to a file
+app_file_path = os.path.join(DATA_DIR, 'app.py')
+with open(app_file_path, 'w') as f:
+    f.write(streamlit_app_code)
+
+print(f"\nStreamlit app code saved to {app_file_path}")
+print("To run the Streamlit app, navigate to the 'data' directory in your terminal and run: `streamlit run app.py`")
+print("\n--- Script Execution Complete ---")
