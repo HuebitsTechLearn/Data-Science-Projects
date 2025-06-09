@@ -1,0 +1,355 @@
+Here's the complete implementation code for the Smart Loan Approval System using Explainable AI (XAI) with SHAP, Logistic Regression, Decision Trees, and a Streamlit interface that visualizes feature contributions in real-time.
+
+Phase 1: Setup & Preprocessing
+loan_xai_pipeline.py
+python
+Copy
+Edit
+import pandas as pd
+import numpy as np
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
+from sklearn.impute import SimpleImputer
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import classification_report
+from imblearn.over_sampling import SMOTE
+import shap
+import joblib
+
+def load_and_preprocess(filepath):
+    df = pd.read_csv(filepath)
+    
+    # Drop unnecessary columns (customize based on dataset)
+    df.drop(columns=['Loan_ID'], inplace=True, errors='ignore')
+    
+    # Handle missing values
+    imputer = SimpleImputer(strategy='most_frequent')
+    df = pd.DataFrame(imputer.fit_transform(df), columns=df.columns)
+    
+    # Encode categorical variables
+    df = pd.get_dummies(df, drop_first=True)
+    
+    # Define target and features
+    X = df.drop('Loan_Status_Y', axis=1)
+    y = df['Loan_Status_Y']
+    
+    # Balance classes
+    smote = SMOTE()
+    X_res, y_res = smote.fit_resample(X, y)
+    
+    # Scale features
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(X_res)
+    
+    return X_scaled, y_res, scaler, X.columns
+
+def train_model(X, y, model_type='logistic'):
+    if model_type == 'logistic':
+        model = LogisticRegression(max_iter=1000)
+    elif model_type == 'rf':
+        model = RandomForestClassifier(n_estimators=100, random_state=42)
+    else:
+        raise ValueError("Unsupported model_type. Use 'logistic' or 'rf'.")
+    
+    model.fit(X, y)
+    return model
+
+def explain_model(model, X_sample):
+    explainer = shap.Explainer(model)
+    shap_values = explainer(X_sample)
+    return shap_values
+
+def save_pipeline(model, scaler, feature_names):
+    joblib.dump(model, 'model.pkl')
+    joblib.dump(scaler, 'scaler.pkl')
+    joblib.dump(feature_names, 'features.pkl')
+
+Phase 2: Streamlit App for Interactive Loan Approval + XAI
+app.py
+python
+Copy
+Edit
+import streamlit as st
+import pandas as pd
+import numpy as np
+import shap
+import matplotlib.pyplot as plt
+import joblib
+
+# Load model and scaler
+model = joblib.load('model.pkl')
+scaler = joblib.load('scaler.pkl')
+features = joblib.load('features.pkl')
+
+st.set_page_config(page_title="Smart Loan Approval System with XAI", layout="centered")
+st.title("Smart Loan Approval System")
+st.markdown("#### Powered by Explainable AI (SHAP)")
+
+# Input fields
+def user_input_features():
+    input_data = {}
+    for feat in features:
+        input_data[feat] = st.number_input(feat, value=0.0)
+    return pd.DataFrame([input_data])
+
+# User input
+input_df = user_input_features()
+
+if st.button("Predict & Explain"):
+    input_scaled = scaler.transform(input_df)
+    prediction = model.predict(input_scaled)[0]
+    prob = model.predict_proba(input_scaled)[0][1]
+    
+    st.subheader(f"Prediction: {'Approved' if prediction == 1 else 'Rejected'}")
+    st.write(f"Confidence Score: {prob:.2f}")
+
+    st.markdown("---")
+    st.subheader("Explanation with SHAP")
+
+    # Generate SHAP explanation
+    explainer = shap.Explainer(model)
+    shap_values = explainer(input_scaled)
+
+    st.pyplot(shap.plots.waterfall(shap_values[0], max_display=10, show=False))
+
+Folder Structure
+Copy
+Edit
+SmartLoanXAI/
+│
+├── loan_data.csv
+├── loan_xai_pipeline.py
+├── app.py
+├── model.pkl
+├── scaler.pkl
+├── features.pkl
+
+Phase 3: Run and Test
+Replace loan_data.csv with a dataset like this one on Kaggle.
+
+Run pipeline:
+
+bash
+Copy
+Edit
+python -c "from loan_xai_pipeline import *; X, y, s, f = load_and_preprocess('loan_data.csv'); m = train_model(X, y, 'logistic'); save_pipeline(m, s, f)"
+Launch Streamlit:
+
+bash
+Copy
+Edit
+streamlit run app.py
+
+Output
+Live loan status predictions
+SHAP-based explainability
+Transparent audit trail for each decision
+Fully customizable for financial regulation alignment
+
+Add-Ons You Can Build
+Export report as PDF (with decision + SHAP plot)
+Add login + encrypted logs for audit trail
+Add retraining trigger based on performance drift
+Deploy via Streamlit Cloud / HuggingFace Spaces
+
+
+
+a production-grade version of the Smart Loan Approval System using Explainable AI (XAI) — clean, modular, and ready to deploy. Below is the full stack setup with advanced features:
+
+1. Folder Structure
+bash
+Copy
+Edit
+smart-loan-xai/
+│
+├── backend/
+│   ├── main.py                # FastAPI backend
+│   ├── model.pkl              # Trained model
+│   ├── explainer.pkl          # SHAP explainer
+│   └── utils.py               # Preprocessing utilities
+│
+├── frontend/
+│   └── streamlit_app.py       # Streamlit UI for end-users
+│
+├── dashboard/
+│   └── xai_dashboard.py       # Dash visualization for admin
+│
+├── data/
+│   └── loan_data.csv          # Source dataset
+│
+├── notebooks/
+│   └── training.ipynb         # Model training & SHAP generation
+│
+├── requirements.txt
+└── README.md
+
+2. Model Training (notebooks/training.ipynb)
+python
+Copy
+Edit
+import pandas as pd
+from sklearn.model_selection import train_test_split
+from sklearn.ensemble import GradientBoostingClassifier
+from sklearn.metrics import classification_report
+import shap
+import joblib
+
+# Load & preprocess data
+df = pd.read_csv('../data/loan_data.csv')
+X = df.drop('loan_status', axis=1)
+y = df['loan_status']
+
+X_train, X_test, y_train, y_test = train_test_split(X, y, stratify=y)
+
+# Train model
+model = GradientBoostingClassifier()
+model.fit(X_train, y_train)
+
+# Save model
+joblib.dump(model, '../backend/model.pkl')
+
+# SHAP explainer
+explainer = shap.Explainer(model, X_train)
+joblib.dump(explainer, '../backend/explainer.pkl')
+
+3. Backend API (backend/main.py)
+python
+Copy
+Edit
+from fastapi import FastAPI
+from pydantic import BaseModel
+import joblib
+import shap
+import pandas as pd
+
+app = FastAPI()
+
+model = joblib.load("model.pkl")
+explainer = joblib.load("explainer.pkl")
+
+class LoanInput(BaseModel):
+    credit_score: float
+    income: float
+    debt_to_income: float
+    employment_length: int
+
+@app.post("/predict/")
+def predict(input: LoanInput):
+    data = pd.DataFrame([input.dict()])
+    pred = model.predict(data)[0]
+    shap_values = explainer(data)
+    feature_impact = dict(zip(data.columns, shap_values.values[0]))
+    return {"prediction": int(pred), "explanation": feature_impact}
+
+4. Streamlit Frontend (frontend/streamlit_app.py)
+python
+Copy
+Edit
+import streamlit as st
+import requests
+import pandas as pd
+import matplotlib.pyplot as plt
+
+st.title("Smart Loan Approval System with Explainable AI")
+
+credit_score = st.slider("Credit Score", 300, 850, 650)
+income = st.number_input("Annual Income", value=50000)
+dti = st.slider("Debt-to-Income Ratio", 0.0, 1.0, 0.25)
+employment = st.slider("Employment Length (years)", 0, 40, 5)
+
+if st.button("Predict"):
+    input_data = {
+        "credit_score": credit_score,
+        "income": income,
+        "debt_to_income": dti,
+        "employment_length": employment
+    }
+
+    res = requests.post("http://localhost:8000/predict/", json=input_data).json()
+    st.subheader("Prediction: " + ("Approved" if res["prediction"] else "❌ Rejected"))
+
+    st.subheader("Feature Impact (SHAP Values)")
+    shap_df = pd.DataFrame.from_dict(res["explanation"], orient='index', columns=['SHAP Value'])
+    st.bar_chart(shap_df)
+
+5. SHAP Dashboard (dashboard/xai_dashboard.py)
+python
+Copy
+Edit
+import dash
+from dash import dcc, html
+import pandas as pd
+import joblib
+import shap
+import plotly.graph_objects as go
+
+app = dash.Dash(__name__)
+model = joblib.load("../backend/model.pkl")
+data = pd.read_csv("../data/loan_data.csv").drop("loan_status", axis=1)
+explainer = shap.Explainer(model, data)
+shap_values = explainer(data)
+
+feature_importance = pd.DataFrame({
+    "feature": data.columns,
+    "shap": shap_values.values.mean(axis=0)
+}).sort_values(by="shap", ascending=False)
+
+app.layout = html.Div(children=[
+    html.H1("Global Explainability Dashboard"),
+    dcc.Graph(
+        figure=go.Figure([
+            go.Bar(x=feature_importance["feature"], y=feature_importance["shap"])
+        ])
+    )
+])
+
+if __name__ == '__main__':
+    app.run_server(debug=True)
+
+6. requirements.txt
+txt
+Copy
+Edit
+fastapi
+uvicorn
+pandas
+scikit-learn
+shap
+joblib
+streamlit
+dash
+plotly
+matplotlib
+
+7. Running It All
+Train the model using Jupyter:
+
+bash
+Copy
+Edit
+jupyter notebook notebooks/training.ipynb
+Launch the backend API:
+
+bash
+Copy
+Edit
+uvicorn backend.main:app --reload
+Launch the Streamlit frontend:
+
+bash
+Copy
+Edit
+streamlit run frontend/streamlit_app.py
+Launch the SHAP Dashboard:
+
+bash
+Copy
+Edit
+python dashboard/xai_dashboard.py
+
+Pro Tips for Production
+Use MongoDB or PostgreSQL to store inputs and explanations for auditing.
+Add OAuth2 for secured access to dashboards.
+Integrate with Twilio or Email APIs for auto-notifications on decisions.
+Containerize using Docker and orchestrate with Kubernetes if scaling.
