@@ -1,0 +1,220 @@
+import pandas as pd
+import numpy as np
+from datetime import datetime, timedelta
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.ensemble import IsolationForest
+from sklearn.preprocessing import StandardScaler
+
+# --- Configuration ---
+START_DATE = '2023-01-01'
+END_DATE = '2024-06-01' # Simulate data up to recently
+ANOMALY_DETECTION_CONTAMINATION = 0.01 # Percentage of outliers expected in data
+
+# --- 1. Simulate Satellite Data (e.g., NDVI - Normalized Difference Vegetation Index) ---
+def simulate_satellite_data(start_date, end_date):
+    """
+    Simulates daily satellite-derived data (e.g., NDVI).
+    NDVI typically ranges from -1 to +1. Healthy vegetation > 0.5.
+    We'll simulate a general seasonal trend with some noise.
+    """
+    dates = pd.date_range(start=start_date, end=end_date, freq='D')
+    num_days = len(dates)
+    
+    # Seasonal trend (e.g., higher in summer, lower in winter)
+    seasonality = 0.4 * np.sin(np.linspace(0, 4 * np.pi, num_days)) + 0.3 # Between -0.4 and 0.4, plus base 0.3
+    
+    # Base NDVI with slight upward/downward drift over time
+    base_ndvi = 0.5 + seasonality + np.linspace(0, 0.1, num_days) # Slight positive trend
+    
+    # Add random noise
+    noise = np.random.normal(0, 0.05, num_days) # Small random fluctuations
+    
+    # Simulate some "events" like drought or sudden vegetation loss
+    # For example, a sudden drop for 30 days
+    if num_days > 200:
+        event_start_day = np.random.randint(100, num_days - 100)
+        event_duration = 30
+        base_ndvi[event_start_day : event_start_day + event_duration] -= np.random.uniform(0.3, 0.6) # Drop in NDVI
+        
+    satellite_ndvi = np.clip(base_ndvi + noise, -1, 1) # Ensure values are within -1 to 1 range
+    
+    df = pd.DataFrame({'Timestamp': dates, 'Satellite_NDVI': satellite_ndvi})
+    return df
+
+print("Simulating Satellite Data (NDVI)...")
+satellite_df = simulate_satellite_data(START_DATE, END_DATE)
+print(satellite_df.head())
+
+# --- 2. Simulate IoT Sensor Data (e.g., Local Ground Temperature) ---
+def simulate_iot_data(start_date, end_date):
+    """
+    Simulates daily IoT sensor data (e.g., local ground temperature in Celsius).
+    """
+    dates = pd.date_range(start=start_date, end=end_date, freq='D')
+    num_days = len(dates)
+    
+    # Seasonal temperature variation
+    seasonality = 10 * np.sin(np.linspace(0, 2 * np.pi * ((num_days / 365.25)), num_days)) # Annual cycle
+    
+    # Base temperature with some daily fluctuations
+    base_temp = 20 + seasonality + np.random.normal(0, 2, num_days)
+    
+    # Simulate some sensor malfunctions or extreme local events (outliers)
+    num_outliers = int(num_days * 0.005) # 0.5% outliers
+    outlier_indices = np.random.choice(num_days, num_outliers, replace=False)
+    base_temp[outlier_indices] += np.random.choice([-1, 1], num_outliers) * np.random.uniform(10, 20, num_outliers)
+    
+    iot_temperature = base_temp
+    
+    df = pd.DataFrame({'Timestamp': dates, 'IoT_Temperature': iot_temperature})
+    return df
+
+print("\nSimulating IoT Sensor Data (Local Temperature)...")
+iot_df = simulate_iot_data(START_DATE, END_DATE)
+print(iot_df.head())
+
+# --- 3. Data Fusion & Synchronization ---
+# Merge the two datasets on 'Timestamp'
+# Assuming timestamps are aligned daily for simplicity.
+# In a real system, you might aggregate or resample data to a common frequency.
+
+print("\nFusing Satellite and IoT data...")
+fused_df = pd.merge(satellite_df, iot_df, on='Timestamp', how='inner')
+fused_df.set_index('Timestamp', inplace=True)
+print("Fused Data Head:")
+print(fused_df.head())
+print(f"Total fused data points: {len(fused_df)}")
+
+# --- 4. Data Preprocessing & Feature Engineering ---
+# Add simple time-series features from fused data
+print("\nPerforming Feature Engineering...")
+fused_df['NDVI_Lag1'] = fused_df['Satellite_NDVI'].shift(1)
+fused_df['Temp_Lag1'] = fused_df['IoT_Temperature'].shift(1)
+fused_df['NDVI_RollingMean7'] = fused_df['Satellite_NDVI'].rolling(window=7).mean()
+fused_df['Temp_RollingMean7'] = fused_df['IoT_Temperature'].rolling(window=7).mean()
+fused_df['NDVI_Temp_Interaction'] = fused_df['Satellite_NDVI'] * fused_df['IoT_Temperature']
+
+# Drop rows with NaN values introduced by shifting/rolling (e.g., first 6 rows for rolling mean)
+fused_df.dropna(inplace=True)
+
+# Select features for anomaly detection
+features_for_anomaly = ['Satellite_NDVI', 'IoT_Temperature', 
+                        'NDVI_Lag1', 'Temp_Lag1', 
+                        'NDVI_RollingMean7', 'Temp_RollingMean7',
+                        'NDVI_Temp_Interaction']
+
+X = fused_df[features_for_anomaly]
+
+# Scale features for Isolation Forest (highly recommended)
+scaler = StandardScaler()
+X_scaled = scaler.fit_transform(X)
+X_scaled_df = pd.DataFrame(X_scaled, columns=features_for_anomaly, index=fused_df.index)
+
+print("Features for Anomaly Detection (scaled) head:")
+print(X_scaled_df.head())
+
+# --- 5. Machine Learning Model Development (Anomaly Detection - Isolation Forest) ---
+print("\nTraining Anomaly Detection Model (Isolation Forest)...")
+
+# Initialize Isolation Forest model
+# contamination: The proportion of outliers in the data set. 
+# It's an estimate, adjust based on domain knowledge.
+model = IsolationForest(contamination=ANOMALY_DETECTION_CONTAMINATION, random_state=42)
+
+# Fit the model to the scaled data
+model.fit(X_scaled)
+
+# Predict anomalies (-1 for outliers, 1 for inliers)
+fused_df['Anomaly'] = model.predict(X_scaled)
+
+# Map anomaly prediction to a more intuitive label
+fused_df['Anomaly_Label'] = fused_df['Anomaly'].map({1: 'Normal', -1: 'Anomaly'})
+
+print("Anomaly detection complete. Anomaly counts:")
+print(fused_df['Anomaly_Label'].value_counts())
+
+# --- 6. Visualization & Dashboard Insights ---
+print("\nGenerating visualizations of fused data and anomalies...")
+
+# Plot Satellite NDVI with anomalies
+plt.figure(figsize=(18, 7))
+sns.lineplot(x=fused_df.index, y='Satellite_NDVI', data=fused_df, label='Satellite NDVI (Actual)', color='#1f77b4', linewidth=1)
+anomalies_ndvi = fused_df[fused_df['Anomaly'] == -1]
+plt.scatter(anomalies_ndvi.index, anomalies_ndvi['Satellite_NDVI'], color='red', label='NDVI Anomaly', s=50, zorder=5)
+plt.title('Satellite NDVI with Detected Anomalies', fontsize=18)
+plt.xlabel('Date', fontsize=14)
+plt.ylabel('Satellite NDVI', fontsize=14)
+plt.legend(fontsize=12)
+plt.grid(True, linestyle='--', alpha=0.7)
+plt.tight_layout()
+plt.show()
+
+# Plot IoT Temperature with anomalies
+plt.figure(figsize=(18, 7))
+sns.lineplot(x=fused_df.index, y='IoT_Temperature', data=fused_df, label='IoT Temperature (Actual)', color='#ff7f0e', linewidth=1)
+anomalies_temp = fused_df[fused_df['Anomaly'] == -1]
+plt.scatter(anomalies_temp.index, anomalies_temp['IoT_Temperature'], color='red', label='Temperature Anomaly', s=50, zorder=5)
+plt.title('IoT Temperature with Detected Anomalies', fontsize=18)
+plt.xlabel('Date', fontsize=14)
+plt.ylabel('IoT Temperature (°C)', fontsize=14)
+plt.legend(fontsize=12)
+plt.grid(True, linestyle='--', alpha=0.7)
+plt.tight_layout()
+plt.show()
+
+# You can also visualize other features or relationships, e.g., a scatter plot of NDVI vs Temp colored by anomaly.
+plt.figure(figsize=(10, 8))
+sns.scatterplot(x='Satellite_NDVI', y='IoT_Temperature', hue='Anomaly_Label', 
+                palette={'Normal': 'blue', 'Anomaly': 'red'},
+                data=fused_df, alpha=0.7)
+plt.title('NDVI vs. Temperature: Anomaly Detection', fontsize=16)
+plt.xlabel('Satellite NDVI', fontsize=12)
+plt.ylabel('IoT Temperature (°C)', fontsize=12)
+plt.legend(title='Status', fontsize=10)
+plt.grid(True, linestyle='--', alpha=0.6)
+plt.tight_layout()
+plt.show()
+
+# --- 7. Integration Hooks & Further Considerations ---
+
+print("\n--- Integration Hooks & Further Considerations ---")
+
+# a) Data Acquisition & Ingestion:
+print("\n* Google Earth Engine (GEE):")
+print("  - Use GEE Python API to fetch satellite imagery (Sentinel-2, Landsat-8) and compute indices (NDVI, NDWI).")
+print("  - Aggregate data to a daily/weekly resolution for your areas of interest.")
+print("  - Example: ee.ImageCollection('COPERNICUS/S2_SR').filterDate(start, end).mean().select('B8', 'B4').normalizedDifference().rename('NDVI')")
+
+print("\n* IoT Data (MQTT):")
+print("  - IoT devices (e.g., Raspberry Pi with sensors) publish data to an MQTT broker.")
+print("  - A Python script subscribes to MQTT topics, receives real-time messages.")
+print("  - Data is then parsed, validated, and timestamped.")
+
+# b) Data Storage (Database):
+print("\n* Time-Series Database (e.g., InfluxDB, TimescaleDB):")
+print("  - Store raw and processed satellite/IoT data efficiently for time-series queries.")
+print("  - This Python script would fetch preprocessed data from this database for analysis.")
+print("  - Example (InfluxDB Python client): client.write_points(json_data, database='climate_data')")
+
+# c) ML Model Deployment & Real-time Inference:
+print("\n* API Endpoint:")
+print("  - Deploy this Python anomaly detection logic as a microservice (e.g., using Flask/FastAPI).")
+print("  - The API would receive new incoming fused data points (or batches) from the data pipeline.")
+print("  - It uses the pre-trained Isolation Forest model and scaler to predict anomalies.")
+print("  - Example: joblib.dump(model, 'anomaly_model.pkl'); joblib.dump(scaler, 'scaler.pkl')")
+
+# d) Dashboarding (Grafana):
+print("\n* Data Source Integration:")
+print("  - Grafana connects directly to your time-series database (e.g., InfluxDB).")
+print("  - Create dashboards to visualize 'Satellite_NDVI', 'IoT_Temperature', and overlay 'Anomaly' flags.")
+print("  - Use Grafana's alerting features to trigger notifications based on detected anomalies from the model.")
+print("  - Queries could look like: SELECT 'IoT_Temperature', 'Anomaly_Label' FROM 'climate_data' WHERE 'region' = 'your_area'")
+
+# e) Advanced ML & Fusion:
+print("\n* CNNs for Satellite Imagery:")
+print("  - For tasks like deforestation detection or land cover classification from raw satellite images, you'd use PyTorch/TensorFlow to train CNNs separately.")
+print("  - The output of these CNNs (e.g., 'deforestation_score', 'urban_expansion_rate') would then become features for fusion with IoT data.")
+print("  - This is a more complex step beyond the scope of this general example.")
+
+print("\n--- End of Script ---")
