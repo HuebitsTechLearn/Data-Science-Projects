@@ -1,0 +1,248 @@
+import pandas as pd
+import numpy as np
+import json
+import re # For basic text cleaning
+import datetime
+import requests # For making API calls
+
+# --- Configuration ---
+# IMPORTANT: Leave apiKey as an empty string. Canvas will automatically provide it at runtime.
+API_KEY = ""
+GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key="
+
+# --- Simulated Knowledge Base (In-memory for demonstration) ---
+# In a real app, this would be a comprehensive database or knowledge graph.
+KNOWLEDGE_BASE = {
+    "career_guidance": {
+        "data science": "For data science, consider courses in Python (Pandas, NumPy, Scikit-learn), statistics, machine learning, and data visualization. Internships are crucial!",
+        "AI engineering": "AI engineering requires strong programming skills (Python), understanding of deep learning frameworks (TensorFlow, PyTorch), and knowledge of MLOps. Look into cloud platforms!",
+        "resume": "A good resume highlights your skills, relevant projects, and quantifiable achievements. Tailor it to each job application. Online templates and university career services can help.",
+        "job prospects": "Job prospects in tech, especially AI and data science, are strong. Networking and continuous learning are key for staying competitive.",
+        "software development": "Software development involves mastering programming languages (Java, Python, C++), data structures, algorithms, and software design principles. Consider full-stack or specialized roles."
+    },
+    "academic_advice": {
+        "calculus": "For calculus resources, check your textbook, online tutorials like Khan Academy, or university tutoring services. Practice problems are essential!",
+        "study habits": "Effective study habits include active recall, spaced repetition, minimizing distractions, and regular breaks. Find what works best for you.",
+        "course registration": "Course registration deadlines are usually published on your university's academic calendar. Check the registrar's office website or student portal for exact dates.",
+        "essay writing": "For essay writing, focus on clear arguments, strong evidence, proper citation, and logical structure. Utilize your university's writing center for support."
+    },
+    "mental_wellness": {
+        "stress": "Managing stress involves techniques like mindfulness, exercise, adequate sleep, and time management. Don't hesitate to reach out for support.",
+        "anxiety": "If you're feeling anxious, try deep breathing exercises, grounding techniques, or talking to a trusted friend. Professional help is available if needed.",
+        "talk to someone": "It's brave to reach out! Your university counseling services offer confidential support. You can also contact national helplines if it's an emergency."
+    },
+    "logistical_info": {
+        "library hours": "Please check your university library's official website for the most up-to-date operating hours.",
+        "scholarship": "Information on scholarships can usually be found on your university's financial aid website. Look for departmental, merit-based, or need-based scholarships."
+    }
+}
+
+# --- Simulated User Profile & Mood Tracking (In-memory for demonstration) ---
+# In a real app, this would be a MongoDB or similar database.
+user_profiles = {} # Stores user_id: {'mood_history': [], 'conversation_history': []}
+
+def get_user_profile(user_id):
+    """Retrieves or initializes a user profile."""
+    if user_id not in user_profiles:
+        user_profiles[user_id] = {'mood_history': [], 'conversation_history': []}
+    return user_profiles[user_id]
+
+def update_mood_history(user_id, mood, timestamp=None):
+    """Updates the user's mood history."""
+    if timestamp is None:
+        timestamp = datetime.datetime.now()
+    profile = get_user_profile(user_id)
+    profile['mood_history'].append({'mood': mood, 'timestamp': timestamp.isoformat()})
+    print(f"(Chatbot internal: Mood '{mood}' recorded for user {user_id[-4:]})")
+
+def update_conversation_history(user_id, role, text):
+    """Updates the user's conversation history."""
+    profile = get_user_profile(user_id)
+    profile['conversation_history'].append({'role': role, 'text': text, 'timestamp': datetime.datetime.now().isoformat()})
+
+# --- NLU Component (Simplified: Keyword-based Intent Recognition) ---
+# In a real app, this would be a trained Rasa NLU model or fine-tuned Transformer.
+
+def identify_intent(user_input):
+    """
+    Identifies the user's intent based on keywords.
+    Returns a tuple (intent, entity, confidence).
+    """
+    user_input_lower = user_input.lower()
+
+    # Academic intents
+    if re.search(r'course|study|academic|deadline|exam|grade|assignment|calculus|writing', user_input_lower):
+        if 'calculus' in user_input_lower: return 'academic_advice', 'calculus', 0.9
+        if 'study' in user_input_lower: return 'academic_advice', 'study habits', 0.9
+        if 'deadline' in user_input_lower or 'registration' in user_input_lower: return 'academic_advice', 'course registration', 0.9
+        if 'writing' in user_input_lower: return 'academic_advice', 'essay writing', 0.9
+        return 'academic_advice', 'general', 0.7 # Catch-all for academic
+    
+    # Career intents
+    if re.search(r'career|job|resume|interview|data science|ai engineering|software development|prospects', user_input_lower):
+        if 'data science' in user_input_lower: return 'career_guidance', 'data science', 0.9
+        if 'ai engineering' in user_input_lower or 'ai engineer' in user_input_lower: return 'career_guidance', 'AI engineering', 0.9
+        if 'resume' in user_input_lower: return 'career_guidance', 'resume', 0.9
+        if 'job prospects' in user_input_lower: return 'career_guidance', 'job prospects', 0.9
+        if 'software development' in user_input_lower: return 'career_guidance', 'software development', 0.9
+        return 'career_guidance', 'general', 0.7 # Catch-all for career
+        
+    # Mental health/wellness intents
+    if re.search(r'stress|anxiety|depressed|sad|unhappy|overwhelmed|talk to|feeling|mental health|wellness', user_input_lower):
+        if 'stress' in user_input_lower: return 'mental_wellness', 'stress', 0.9
+        if 'anxiety' in user_input_lower: return 'mental_wellness', 'anxiety', 0.9
+        if 'talk to' in user_input_lower or 'someone to talk to' in user_input_lower: return 'mental_wellness', 'talk to someone', 0.9
+        return 'mental_wellness', 'general', 0.8 # Catch-all for wellness
+
+    # Logistical/Informational intents
+    if re.search(r'library|hours|scholarship|apply|information|where is', user_input_lower):
+        if 'library' in user_input_lower or 'hours' in user_input_lower: return 'logistical_info', 'library hours', 0.9
+        if 'scholarship' in user_input_lower: return 'logistical_info', 'scholarship', 0.9
+        return 'logistical_info', 'general', 0.6
+
+    # Greetings
+    if re.search(r'hello|hi|hey|hola', user_input_lower):
+        return 'greet', None, 1.0
+
+    # Mood tracking check-in
+    if re.search(r'how are you feeling|how do you feel|how have you been', user_input_lower):
+        return 'mood_checkin_query', None, 0.9
+
+    # Mood expression
+    if re.search(r'i am|i feel|i\'m|feeling', user_input_lower) and \
+       re.search(r'good|happy|great|well|ok|bad|stressed|anxious|sad|tired', user_input_lower):
+        mood_keywords = {'good': 'positive', 'happy': 'positive', 'great': 'positive', 'well': 'positive', 'ok': 'neutral',
+                         'bad': 'negative', 'stressed': 'negative', 'anxious': 'negative', 'sad': 'negative', 'tired': 'negative'}
+        for keyword, mood_label in mood_keywords.items():
+            if keyword in user_input_lower:
+                return 'express_mood', mood_label, 0.95
+        return 'express_mood', 'neutral', 0.8 # Default if keyword not found but expresses mood
+
+    return 'fallback', None, 0.5 # Default fallback
+
+# --- LLM Integration (Gemini API Call) ---
+async def call_gemini_api(prompt, chat_history):
+    """
+    Makes a call to the Gemini API to generate a response.
+    """
+    full_chat_history = []
+    # Add previous conversation turns for context
+    for turn in chat_history:
+        full_chat_history.append({"role": turn["role"], "parts": [{"text": turn["text"]}]})
+    # Add the current prompt
+    full_chat_history.append({"role": "user", "parts": [{"text": prompt}]})
+
+    payload = {
+        "contents": full_chat_history
+    }
+    
+    headers = {
+        'Content-Type': 'application/json'
+    }
+
+    try:
+        response = requests.post(GEMINI_API_URL + API_KEY, headers=headers, json=payload)
+        response.raise_for_status() # Raise an HTTPError for bad responses (4xx or 5xx)
+        result = response.json()
+
+        if result.get("candidates") and len(result["candidates"]) > 0 and \
+           result["candidates"][0].get("content") and result["candidates"][0]["content"].get("parts") and \
+           len(result["candidates"][0]["content"]["parts"]) > 0:
+            text = result["candidates"][0]["content"]["parts"][0]["text"]
+            return text
+        else:
+            print("Warning: Gemini API response structure unexpected or content missing.")
+            return "I'm having trouble understanding that right now. Could you rephrase?"
+    except requests.exceptions.RequestException as e:
+        print(f"Error calling Gemini API: {e}")
+        return "I'm sorry, I'm having trouble connecting right now. Please try again later."
+    except json.JSONDecodeError:
+        print("Error decoding JSON from Gemini API response.")
+        return "I encountered an issue processing your request."
+
+# --- Dialogue Management & Response Generation ---
+# In a real Rasa app, this would be handled by dialogue policies.
+
+async def get_chatbot_response(user_id, user_input):
+    """
+    Determines chatbot's response based on intent and generates reply.
+    """
+    intent, entity, confidence = identify_intent(user_input)
+    response_text = "I'm not sure how to help with that. Could you please provide more details?"
+    
+    user_profile = get_user_profile(user_id)
+    chat_history_for_llm = user_profile['conversation_history'][-5:] # Last 5 turns for context
+
+    if intent == 'greet':
+        response_text = "Hello! How can I assist you today with your academic, career, or wellness needs?"
+    elif intent == 'academic_advice':
+        if entity and KNOWLEDGE_BASE['academic_advice'].get(entity):
+            response_text = KNOWLEDGE_BASE['academic_advice'][entity]
+        else:
+            prompt = f"The user is asking for academic advice related to '{user_input}'. Provide a helpful, concise response for a student, focusing on general study tips or where to find help within a university setting. Keep it under 100 words."
+            response_text = await call_gemini_api(prompt, chat_history_for_llm)
+    elif intent == 'career_guidance':
+        if entity and KNOWLEDGE_BASE['career_guidance'].get(entity):
+            response_text = KNOWLEDGE_BASE['career_guidance'][entity]
+        else:
+            prompt = f"The user is asking for career guidance related to '{user_input}'. Provide a helpful, concise response for a student. Include general advice on career exploration or where to seek career services. Keep it under 100 words."
+            response_text = await call_gemini_api(prompt, chat_history_for_llm)
+    elif intent == 'mental_wellness':
+        if entity and KNOWLEDGE_BASE['mental_wellness'].get(entity):
+            response_text = KNOWLEDGE_BASE['mental_wellness'][entity]
+        else:
+            prompt = f"The user expressed feelings related to '{user_input}'. Respond empathetically to a student who might be struggling, and suggest common coping mechanisms or emphasize reaching out for help. Keep it under 100 words."
+            response_text = await call_gemini_api(prompt, chat_history_for_llm)
+        # Suggest professional help if mental wellness intent is detected
+        response_text += " Remember, if you're struggling, your university's counseling services are a great resource. You can find their contact information on the university website."
+    elif intent == 'logistical_info':
+        if entity and KNOWLEDGE_BASE['logistical_info'].get(entity):
+            response_text = KNOWLEDGE_BASE['logistical_info'][entity]
+        else:
+            prompt = f"The user is asking for logistical information: '{user_input}'. Provide a brief, direct answer or guide them to where they can find this type of information within a university. Keep it under 80 words."
+            response_text = await call_gemini_api(prompt, chat_history_for_llm)
+    elif intent == 'mood_checkin_query':
+        response_text = "I'm doing well, thank you for asking! How are *you* feeling today?"
+    elif intent == 'express_mood':
+        update_mood_history(user_id, entity)
+        if entity == 'positive':
+            response_text = "That's wonderful to hear! I'm glad you're feeling positive."
+        elif entity == 'negative':
+            response_text = "I'm sorry to hear that. Please remember, it's okay to feel that way. Is there anything specific you'd like to talk about or get help with?"
+        else:
+            response_text = "Okay, thank you for sharing. Is there anything on your mind today?"
+    elif intent == 'fallback':
+        prompt = f"The user said: '{user_input}'. I couldn't determine a specific intent. Provide a polite and helpful general response, asking for clarification or offering common areas of support for a student (academic, career, wellness). Keep it under 100 words."
+        response_text = await call_gemini_api(prompt, chat_history_for_llm)
+        
+    return response_text
+
+# --- Main Chat Loop (Console-based) ---
+async def chat_with_bot():
+    """Main function to run the chatbot in the console."""
+    print("Welcome to the Student Counseling Chatbot! Type 'exit' to end the conversation.")
+    # For a real multi-user app, you'd manage user IDs more robustly (e.g., sessions)
+    current_user_id = "test_student_001" 
+
+    while True:
+        user_input = input("You: ")
+        if user_input.lower() == 'exit':
+            print("Chatbot: Goodbye! Take care.")
+            break
+        
+        # Update user's conversation history with user's message
+        update_conversation_history(current_user_id, "user", user_input)
+
+        print("Chatbot: Thinking...") # Indicate that the bot is processing
+        chatbot_response = await get_chatbot_response(current_user_id, user_input)
+        
+        # Update user's conversation history with bot's message
+        update_conversation_history(current_user_id, "model", chatbot_response)
+        
+        print(f"Chatbot: {chatbot_response}")
+
+# Run the chatbot (requires asyncio)
+import asyncio
+if __name__ == "__main__":
+    asyncio.run(chat_with_bot())
+
