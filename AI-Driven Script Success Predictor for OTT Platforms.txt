@@ -1,0 +1,280 @@
+import pandas as pd
+import numpy as np
+import re # For text cleaning
+from nltk.sentiment.vader import SentimentIntensityAnalyzer # For sentiment analysis
+from sklearn.model_selection import train_test_split
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.preprocessing import StandardScaler
+import joblib # For saving the model and scaler
+
+# Ensure NLTK resources are downloaded for sentiment analysis
+try:
+    _ = SentimentIntensityAnalyzer()
+except LookupError:
+    import nltk
+    nltk.download('vader_lexicon')
+    print("Downloaded NLTK 'vader_lexicon' for sentiment analysis.")
+
+# --- Configuration ---
+NUM_SCRIPTS = 500 # Number of synthetic scripts to generate
+SUCCESS_METRIC = 'audience_rating' # Target variable for prediction
+
+# --- Part 1: Data Simulation (Scripts and Success Metrics) ---
+# In a real scenario, you would acquire real scripts and success metrics.
+
+def generate_synthetic_script_data(num_scripts):
+    """
+    Generates synthetic script snippets and associated success metrics.
+    We'll simulate text characteristics that might influence success.
+    """
+    np.random.seed(42) # for reproducibility
+
+    script_data = []
+    
+    # Define some archetypes for success simulation
+    # High Success: Engaging, positive arcs, some conflict, good character development
+    # Medium Success: Moderate engagement, mixed sentiment
+    # Low Success: Flat, very negative/positive without arc, weak characters
+    archetypes = {
+        'high': {
+            'text_patterns': ["a thrilling adventure", "hero overcomes challenges", "heartwarming journey", "captivating mystery unfolds", "epic battle", "unexpected twist", "strong lead character", "friendship triumphs", "bittersweet ending"],
+            'min_rating': 7.0, 'max_rating': 9.5, 'min_retention': 0.7, 'max_retention': 0.95
+        },
+        'medium': {
+            'text_patterns': ["a simple story", "everyday life", "some drama", "a predictable outcome", "familiar tropes", "decent characters", "standard plot", "minor conflicts"],
+            'min_rating': 5.0, 'max_rating': 7.5, 'min_retention': 0.4, 'max_retention': 0.75
+        },
+        'low': {
+            'text_patterns': ["a confused narrative", "shallow characters", "boring dialogue", "no clear plot", "disappointing ending", "too many subplots", "lack of tension", "unresolved issues"],
+            'min_rating': 2.0, 'max_rating': 5.5, 'min_retention': 0.1, 'max_retention': 0.5
+        }
+    }
+
+    for i in range(num_scripts):
+        script_id = f'SCRIPT_{i+1:04d}'
+        
+        # Randomly assign an archetype
+        archetype_key = np.random.choice(list(archetypes.keys()), p=[0.3, 0.4, 0.3]) # 30% high, 40% medium, 30% low
+        archetype = archetypes[archetype_key]
+
+        # Generate a synthetic script text
+        script_text_parts = np.random.choice(archetype['text_patterns'], size=np.random.randint(5, 15), replace=True)
+        script_text = ' '.join(script_text_parts) + ". " + "This is a random sentence to add variety." * np.random.randint(1,3)
+        script_text = re.sub(r'\s+', ' ', script_text).strip() # Clean extra spaces
+
+        # Simulate success metrics based on archetype
+        audience_rating = np.random.uniform(archetype['min_rating'], archetype['max_rating'])
+        viewer_retention = np.random.uniform(archetype['min_retention'], archetype['max_retention'])
+        watch_time_hours = np.random.uniform(500000, 5000000) * viewer_retention * (audience_rating / 10) # Scale with rating/retention
+
+        script_data.append({
+            'script_id': script_id,
+            'script_text': script_text,
+            'audience_rating': round(audience_rating, 2),
+            'viewer_retention': round(viewer_retention, 3),
+            'watch_time_hours': round(watch_time_hours, 0)
+        })
+    
+    return pd.DataFrame(script_data)
+
+print(f"Generating {NUM_SCRIPTS} synthetic script data...")
+df = generate_synthetic_script_data(NUM_SCRIPTS)
+print("Sample of generated data:")
+print(df.head())
+
+# --- Part 2: Simplified NLP Feature Extraction ---
+# This part simulates the output of more complex NLP pipelines.
+# For full implementation, you'd use HuggingFace Transformers.
+
+def extract_nlp_features(df):
+    """
+    Extracts simulated and basic NLP features from script text.
+    For demonstration, some features are simulated/simplified.
+    """
+    analyzer = SentimentIntensityAnalyzer()
+    
+    # Text Preprocessing (basic cleaning)
+    df['cleaned_script'] = df['script_text'].apply(lambda x: re.sub(r'[^a-zA-Z\s]', '', x).lower())
+    
+    # 1. Sentiment Analysis (using NLTK Vader)
+    print("\nPerforming Sentiment Analysis...")
+    df['sentiment_compound'] = df['cleaned_script'].apply(lambda x: analyzer.polarity_scores(x)['compound'])
+    df['sentiment_positive'] = df['cleaned_script'].apply(lambda x: analyzer.polarity_scores(x)['pos'])
+    df['sentiment_negative'] = df['cleaned_script'].apply(lambda x: analyzer.polarity_scores(x)['neg'])
+    df['sentiment_neutral'] = df['cleaned_script'].apply(lambda x: analyzer.polarity_scores(x)['neu'])
+
+    # 2. Simulated Emotion Detection (conceptual - would use HuggingFace in real app)
+    # Simulate a distribution of primary emotions based on sentiment
+    def simulate_emotion(sentiment):
+        if sentiment > 0.5: return np.random.choice(['joy', 'love', 'excitement'], p=[0.5, 0.3, 0.2])
+        if sentiment < -0.5: return np.random.choice(['sadness', 'anger', 'fear'], p=[0.5, 0.3, 0.2])
+        return np.random.choice(['neutral', 'surprise', 'calm'], p=[0.6, 0.2, 0.2])
+    
+    df['dominant_emotion'] = df['sentiment_compound'].apply(simulate_emotion)
+    
+    # One-hot encode dominant emotion
+    df = pd.get_dummies(df, columns=['dominant_emotion'], prefix='emotion')
+
+    # 3. Simulated Emotional Arc (conceptual - would require more complex sequence analysis)
+    # Simulate based on sentiment variability within script length
+    df['emotional_arc_variability'] = df['sentiment_compound'] * np.random.uniform(0.1, 0.5, len(df)) + np.random.uniform(0, 0.2, len(df))
+    df['emotional_arc_variability'] = np.clip(df['emotional_arc_variability'], 0, 1)
+
+    # 4. Simulated Character Analysis (conceptual - would require NER and coreference resolution)
+    df['main_character_prominence_score'] = np.random.uniform(0.5, 1.0, len(df)) # Higher means more prominent
+    df['num_characters_overall'] = np.random.randint(5, 20, len(df))
+
+    # 5. Simulated Genre and Keyword Extraction (conceptual - would use topic modeling/classification)
+    genres = ['Drama', 'Comedy', 'Action', 'Thriller', 'Sci-Fi', 'Romance']
+    df['main_genre'] = np.random.choice(genres, size=len(df))
+    # One-hot encode main genre
+    df = pd.get_dummies(df, columns=['main_genre'], prefix='genre')
+
+    # 6. Basic Readability Score (using word count as a proxy for complexity - can use textstat in real app)
+    df['word_count'] = df['cleaned_script'].apply(lambda x: len(x.split()))
+    df['readability_score'] = 100 - (df['word_count'] / df['word_count'].max() * 50) # Simplified proxy
+    df['readability_score'] = np.clip(df['readability_score'], 30, 95) # Keep in realistic range
+
+    # Drop original script text and cleaned text after feature extraction
+    df = df.drop(columns=['script_text', 'cleaned_script'])
+    return df
+
+print("\nExtracting NLP features (some are simulated)...")
+df_features = extract_nlp_features(df.copy())
+print("Features DataFrame head:")
+print(df_features.head())
+
+# --- Part 3: Data Integration and Model Training ---
+print(f"\nTraining predictive model for {SUCCESS_METRIC}...")
+
+# Define features (X) and target (y)
+# Drop the success metrics other than the one we are predicting
+features_to_drop = ['script_id', 'audience_rating', 'viewer_retention', 'watch_time_hours']
+X = df_features.drop(columns=features_to_drop)
+y = df_features[SUCCESS_METRIC]
+
+# Ensure all columns in X are numeric by dropping any remaining non-numeric
+# This is a safeguard if new non-numeric columns were accidentally introduced
+X = X.select_dtypes(include=np.number)
+
+# Split data
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+# Scale numerical features (important for many models, though less critical for tree-based)
+# But good practice for future model types or if using feature importance based on coefficients
+scaler = StandardScaler()
+X_train_scaled = scaler.fit_transform(X_train)
+X_test_scaled = scaler.transform(X_test)
+
+# Convert scaled arrays back to DataFrame for feature importance analysis later
+X_train_scaled_df = pd.DataFrame(X_train_scaled, columns=X_train.columns)
+X_test_scaled_df = pd.DataFrame(X_test_scaled, columns=X_test.columns)
+
+# Train a RandomForestRegressor model
+model = RandomForestRegressor(n_estimators=100, random_state=42, n_jobs=-1)
+model.fit(X_train_scaled_df, y_train)
+
+print("Model training complete.")
+
+# --- Part 4: Model Evaluation ---
+print(f"\nEvaluating model performance on {SUCCESS_METRIC}...")
+y_pred = model.predict(X_test_scaled_df)
+
+mae = mean_absolute_error(y_test, y_pred)
+rmse = np.sqrt(mean_squared_error(y_test, y_pred))
+r2 = r2_score(y_test, y_pred)
+
+print(f"Mean Absolute Error (MAE): {mae:.2f}")
+print(f"Root Mean Squared Error (RMSE): {rmse:.2f}")
+print(f"R-squared (R2): {r2:.4f}")
+
+# --- Visualization & Reporting ---
+print("\nGenerating visualizations...")
+
+# Plot: Actual vs. Predicted Ratings
+plt.figure(figsize=(10, 6))
+sns.scatterplot(x=y_test, y=y_pred, alpha=0.6)
+plt.plot([y_test.min(), y_test.max()], [y_test.min(), y_test.max()], 'r--', lw=2, label='Perfect Prediction')
+plt.title(f'Actual vs. Predicted {SUCCESS_METRIC.replace("_", " ").title()}', fontsize=16)
+plt.xlabel(f'Actual {SUCCESS_METRIC.replace("_", " ").title()}', fontsize=12)
+plt.ylabel(f'Predicted {SUCCESS_METRIC.replace("_", " ").title()}', fontsize=12)
+plt.grid(True, linestyle='--', alpha=0.7)
+plt.legend()
+plt.tight_layout()
+plt.show()
+
+# Plot: Feature Importance
+if hasattr(model, 'feature_importances_'):
+    feature_importances = pd.Series(model.feature_importances_, index=X_train_scaled_df.columns).sort_values(ascending=False)
+    plt.figure(figsize=(12, 7))
+    sns.barplot(x=feature_importances, y=feature_importances.index, palette='viridis')
+    plt.title('Feature Importance for Script Success Prediction', fontsize=16)
+    plt.xlabel('Importance', fontsize=12)
+    plt.ylabel('Feature', fontsize=12)
+    plt.tight_layout()
+    plt.show()
+else:
+    print("Model does not have 'feature_importances_'. This plot is skipped.")
+
+# --- Part 5: Model Saving (Integration Hook) ---
+print("\nSaving model and scaler for deployment...")
+
+# Save the trained model and scaler
+model_save_path = 'script_success_predictor_model.pkl'
+scaler_save_path = 'script_success_scaler.pkl'
+
+joblib.dump(model, model_save_path)
+joblib.dump(scaler, scaler_save_path)
+
+print(f"Model saved to '{model_save_path}'")
+print(f"Scaler saved to '{scaler_save_path}'")
+
+# --- Integration Hooks & Further Considerations ---
+print("\n--- Integration Hooks & Further Considerations ---")
+
+# a) Real Data Collection:
+print("\n* Script Data: Obtain actual scripts (e.g., from public screenwriting databases, or licensed datasets).")
+print("* Success Metrics: Integrate with OTT platform analytics APIs to get viewer retention, ratings, watch time, etc.")
+
+# b) Advanced NLP Pipeline:
+print("\n* HuggingFace Transformers:")
+print("  - For true sentiment, emotion detection, and advanced text embeddings (BERT, RoBERTa), use models like `transformers` library.")
+print("  - Example: `from transformers import pipeline; classifier = pipeline('sentiment-analysis')`")
+print("  - Emotional Arc: More complex. Involves splitting scripts into scenes, running sentiment/emotion for each, then analyzing the sequence of scores.")
+print("  - Character Analysis: Requires Named Entity Recognition (NER) to identify characters, then tracking their dialogue/actions/emotions.")
+
+# c) Data Storage:
+print("\n* Database: Use a database (e.g., PostgreSQL, MongoDB) to store raw scripts, extracted features, and success metrics.")
+
+# d) Deployment (e.g., Streamlit App / Flask API):")
+print("\n* Streamlit App:")
+print("  - Create a Streamlit app where users can upload a script (or paste text).")
+print("  - The app would preprocess the text, extract NLP features (using your deployed NLP pipeline).")
+print("  - Load the saved `script_success_predictor_model.pkl` and `script_success_scaler.pkl`.")
+print("  - Make a prediction for the new script.")
+print("  - Display the predicted success score and possibly explain contributing features (e.g., using SHAP values for interpretability).")
+print("  - Example pseudo-code in Streamlit:")
+print("    ```python")
+print("    # Load resources at app startup")
+print("    # script_text_input = st.text_area('Paste your script here:')")
+print("    # if st.button('Predict Success'):")
+print("    #     # Process script_text_input through NLP pipeline to get features_df")
+print("    #     # scaled_features = loaded_scaler.transform(features_df)")
+print("    #     # prediction = loaded_model.predict(scaled_features)[0]")
+print("    #     # st.write(f'Predicted Success Score: {prediction:.2f}')")
+print("    ```")
+
+print("\n* REST API:")
+print("  - Deploy a Flask or FastAPI endpoint that accepts a script text.")
+print("  - This API would internally run the NLP feature extraction and the predictive model.")
+print("  - Returns the predicted success score in a JSON response.")
+
+# e) Visualization & Reporting (Tableau/Custom Dashboards):
+print("\n* Tableau/Power BI: Integrate with your data warehouse where script features and success metrics are stored.")
+print("  - Build interactive dashboards to analyze success patterns by genre, sentiment, emotional arc, etc.")
+print("  - Display the predictions for new scripts and track model performance over time.")
+
+print("\n--- End of Script ---")
