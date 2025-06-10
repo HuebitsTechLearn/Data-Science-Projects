@@ -1,0 +1,794 @@
+Step-by-Step Python Code Implementation
+1. Install dependencies
+bash
+Copy
+Edit
+pip install pandas numpy scikit-learn xgboost plotly dash
+2. Data Simulation and Preprocessing
+python
+Copy
+Edit
+import pandas as pd
+import numpy as np
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
+
+# Simulate synthetic patient data
+np.random.seed(42)
+n = 1000
+df = pd.DataFrame({
+    'age': np.random.randint(20, 90, size=n),
+    'systolic_bp': np.random.normal(130, 15, size=n),
+    'heart_rate': np.random.normal(80, 10, size=n),
+    'temperature': np.random.normal(98.6, 0.7, size=n),
+    'spo2': np.random.normal(96, 2, size=n)
+})
+
+# Simulated binary labels: 1 = high risk / hospitalization
+df['hospitalized'] = (
+    (df['spo2'] < 93) | (df['systolic_bp'] > 145) | (df['heart_rate'] > 100)
+).astype(int)
+3. Model Training
+python
+Copy
+Edit
+from xgboost import XGBClassifier
+from sklearn.metrics import classification_report, roc_auc_score
+
+features = ['age', 'systolic_bp', 'heart_rate', 'temperature', 'spo2']
+X = df[features]
+y = df['hospitalized']
+
+X_train, X_test, y_train, y_test = train_test_split(X, y, stratify=y, random_state=42)
+scaler = StandardScaler()
+X_train = scaler.fit_transform(X_train)
+X_test = scaler.transform(X_test)
+
+model = XGBClassifier(use_label_encoder=False, eval_metric='logloss')
+model.fit(X_train, y_train)
+
+y_pred = model.predict(X_test)
+y_proba = model.predict_proba(X_test)[:, 1]
+
+print(classification_report(y_test, y_pred))
+print("ROC-AUC:", roc_auc_score(y_test, y_proba))
+4. Risk Score Generation + Anomaly Detection
+python
+Copy
+Edit
+from sklearn.ensemble import IsolationForest
+
+# Risk score
+df['risk_score'] = model.predict_proba(scaler.transform(X))[:, 1]
+
+# Anomaly detection on vitals
+iso = IsolationForest(contamination=0.05, random_state=42)
+df['anomaly'] = iso.fit_predict(X)
+df['anomaly'] = df['anomaly'].map({1: 'Normal', -1: 'Anomaly'})
+5. Plotly Dash Dashboard (Basic Version)
+python
+Copy
+Edit
+import dash
+from dash import html, dcc, Input, Output
+import plotly.express as px
+
+app = dash.Dash(__name__)
+fig = px.scatter(df, x='age', y='risk_score', color='anomaly', hover_data=['systolic_bp', 'spo2'])
+
+app.layout = html.Div([
+    html.H1("Patient Risk Scoring Dashboard"),
+    dcc.Graph(figure=fig),
+    html.Div(id='info')
+])
+
+if __name__ == '__main__':
+    app.run_server(debug=True)
+
+Next-Level Add-ons
+Integrate real-time data stream (e.g., MQTT or simulated vitals).
+
+Add SHAP for model interpretability.
+
+Use Dash Tabs for individual patient drill-downs.
+
+Connect to real EHR datasets or FHIR APIs.
+
+
+
+ the full stack setup for your Predictive Patient Risk Scoring System, broken into digestible modules so you can own it end to end. I’ll keep it sharp, professional, and scalable for real-world impact.
+
+1. Data Simulation & Preprocessing
+python
+Copy
+Edit
+import numpy as np
+import pandas as pd
+from sklearn.preprocessing import StandardScaler, OneHotEncoder
+from sklearn.impute import SimpleImputer
+from sklearn.compose import ColumnTransformer
+from sklearn.pipeline import Pipeline
+
+# Simulate patient data: demographics, history, vitals time-series summary
+def simulate_patient_data(num_patients=1000):
+    np.random.seed(42)
+    # Demographics
+    age = np.random.randint(20, 90, num_patients)
+    gender = np.random.choice(['M', 'F'], num_patients)
+    
+    # Medical history flags (binary): hypertension, diabetes, heart_disease
+    hypertension = np.random.binomial(1, 0.3, num_patients)
+    diabetes = np.random.binomial(1, 0.2, num_patients)
+    heart_disease = np.random.binomial(1, 0.1, num_patients)
+    
+    # Vitals summaries (mean over past 7 days)
+    heart_rate = np.random.normal(75, 10, num_patients)
+    systolic_bp = np.random.normal(130, 15, num_patients)
+    diastolic_bp = np.random.normal(85, 10, num_patients)
+    oxygen_saturation = np.random.normal(97, 2, num_patients)
+    temperature = np.random.normal(36.6, 0.3, num_patients)
+    
+    # Target: Hospitalization within next 30 days (binary)
+    # Risk higher if comorbidities and abnormal vitals
+    risk_score = (
+        0.03*age + 
+        0.4*hypertension + 
+        0.5*diabetes + 
+        0.7*heart_disease +
+        0.02*(heart_rate - 75) + 
+        0.015*(systolic_bp - 130) + 
+        -0.01*(oxygen_saturation - 97) + 
+        0.3*(temperature - 36.6)
+    )
+    hospitalization = (risk_score + np.random.normal(0, 0.5, num_patients)) > 1.5
+    hospitalization = hospitalization.astype(int)
+    
+    data = pd.DataFrame({
+        'age': age,
+        'gender': gender,
+        'hypertension': hypertension,
+        'diabetes': diabetes,
+        'heart_disease': heart_disease,
+        'heart_rate': heart_rate,
+        'systolic_bp': systolic_bp,
+        'diastolic_bp': diastolic_bp,
+        'oxygen_saturation': oxygen_saturation,
+        'temperature': temperature,
+        'hospitalization_30d': hospitalization
+    })
+    
+    return data
+
+# Preprocessing pipeline
+def preprocess_data(df):
+    numeric_features = ['age', 'heart_rate', 'systolic_bp', 'diastolic_bp', 'oxygen_saturation', 'temperature']
+    categorical_features = ['gender', 'hypertension', 'diabetes', 'heart_disease']
+
+    numeric_transformer = Pipeline(steps=[
+        ('imputer', SimpleImputer(strategy='median')),
+        ('scaler', StandardScaler())
+    ])
+
+    categorical_transformer = Pipeline(steps=[
+        ('imputer', SimpleImputer(strategy='most_frequent')),
+        ('onehot', OneHotEncoder(drop='first'))
+    ])
+
+    preprocessor = ColumnTransformer(
+        transformers=[
+            ('num', numeric_transformer, numeric_features),
+            ('cat', categorical_transformer, categorical_features)
+        ])
+
+    X = df.drop('hospitalization_30d', axis=1)
+    y = df['hospitalization_30d']
+
+    X_processed = preprocessor.fit_transform(X)
+    return X_processed, y, preprocessor
+
+# Usage
+df = simulate_patient_data()
+X, y, preprocessor = preprocess_data(df)
+print("Data shape:", X.shape)
+2. Model Training & Validation
+python
+Copy
+Edit
+from sklearn.model_selection import train_test_split
+from sklearn.ensemble import RandomForestClassifier
+from xgboost import XGBClassifier
+from sklearn.metrics import classification_report, roc_auc_score
+
+X_train, X_test, y_train, y_test = train_test_split(X, y, stratify=y, test_size=0.2, random_state=42)
+
+# Random Forest baseline
+rf = RandomForestClassifier(n_estimators=100, random_state=42)
+rf.fit(X_train, y_train)
+y_pred_rf = rf.predict(X_test)
+y_proba_rf = rf.predict_proba(X_test)[:,1]
+
+print("Random Forest Classification Report:\n", classification_report(y_test, y_pred_rf))
+print("Random Forest ROC-AUC:", roc_auc_score(y_test, y_proba_rf))
+
+# XGBoost - often better for tabular data
+xgb = XGBClassifier(use_label_encoder=False, eval_metric='logloss', random_state=42)
+xgb.fit(X_train, y_train)
+y_pred_xgb = xgb.predict(X_test)
+y_proba_xgb = xgb.predict_proba(X_test)[:,1]
+
+print("XGBoost Classification Report:\n", classification_report(y_test, y_pred_xgb))
+print("XGBoost ROC-AUC:", roc_auc_score(y_test, y_proba_xgb))
+3.Time-Series Anomaly Detection (Isolation Forest Example)
+python
+Copy
+Edit
+from sklearn.ensemble import IsolationForest
+
+# Simulate vitals time-series feature for a patient (e.g., heart_rate over 30 days)
+# Here, we mock a single patient heart rate time series for anomaly detection demo
+
+np.random.seed(42)
+heart_rate_ts = np.random.normal(75, 5, 30)
+# Inject anomaly: sudden spike
+heart_rate_ts[15] = 110
+
+# Reshape for Isolation Forest: each day is a sample with single feature (heart_rate)
+hr_ts_reshaped = heart_rate_ts.reshape(-1, 1)
+
+iso_forest = IsolationForest(contamination=0.05, random_state=42)
+iso_forest.fit(hr_ts_reshaped)
+anomaly_scores = iso_forest.decision_function(hr_ts_reshaped)
+anomalies = iso_forest.predict(hr_ts_reshaped)
+
+print("Anomaly detection results (1=normal, -1=anomaly):", anomalies)
+4. Dashboard with Plotly Dash
+python
+Copy
+Edit
+import dash
+from dash import dcc, html
+import plotly.graph_objs as go
+import numpy as np
+
+app = dash.Dash(__name__)
+
+# Dummy patient data for dashboard example
+patients = df.copy()
+patients['risk_score'] = xgb.predict_proba(X)[:,1]
+
+app.layout = html.Div([
+    html.H1("Predictive Patient Risk Scoring Dashboard"),
+    dcc.Dropdown(
+        id='patient-dropdown',
+        options=[{'label': f'Patient {i}', 'value': i} for i in patients.index],
+        value=patients.index[0]
+    ),
+    html.Div(id='patient-info'),
+    dcc.Graph(id='vitals-trend'),
+    dcc.Graph(id='risk-gauge')
+])
+
+@app.callback(
+    [dash.dependencies.Output('patient-info', 'children'),
+     dash.dependencies.Output('vitals-trend', 'figure'),
+     dash.dependencies.Output('risk-gauge', 'figure')],
+    [dash.dependencies.Input('patient-dropdown', 'value')]
+)
+def update_dashboard(patient_id):
+    patient = patients.loc[patient_id]
+
+    # Patient info
+    info = html.Div([
+        html.P(f"Age: {patient['age']}"),
+        html.P(f"Gender: {patient['gender']}"),
+        html.P(f"Hypertension: {patient['hypertension']}"),
+        html.P(f"Diabetes: {patient['diabetes']}"),
+        html.P(f"Heart Disease: {patient['heart_disease']}"),
+        html.P(f"Risk Score: {patient['risk_score']:.2f}")
+    ])
+
+    # Vitals trend (mock with random data)
+    days = np.arange(30)
+    heart_rate = np.random.normal(75, 5, 30)
+
+    vitals_fig = go.Figure()
+    vitals_fig.add_trace(go.Scatter(x=days, y=heart_rate, mode='lines+markers', name='Heart Rate'))
+
+    # Risk gauge chart (simplified)
+    gauge_fig = go.Figure(go.Indicator(
+        mode="gauge+number",
+        value=patient['risk_score']*100,
+        title={'text': "Hospitalization Risk %"},
+        gauge={'axis': {'range': [0, 100]},
+               'bar': {'color': "red" if patient['risk_score'] > 0.5 else "green"}}
+    ))
+
+    return info, vitals_fig, gauge_fig
+
+if __name__ == '__main__':
+    app.run_server(debug=True)
+5.Optional: FastAPI Model Serving Skeleton
+python
+Copy
+Edit
+from fastapi import FastAPI
+import uvicorn
+import joblib
+import numpy as np
+
+app = FastAPI()
+
+# Load preprocessor and model from disk (after saving them)
+preprocessor = joblib.load('preprocessor.joblib')
+model = joblib.load('xgb_model.joblib')
+
+@app.post("/predict")
+async def predict(patient_data: dict):
+    # Convert input dict to DataFrame
+    df = pd.DataFrame([patient_data])
+    X = preprocessor.transform(df)
+    proba = model.predict_proba(X)[0, 1]
+    return {"hospitalization_risk": proba}
+
+if __name__ == "__main__":
+    uvicorn.run(app, host="0.0.0.0", port=8000)
+What’s Next?
+You got a simulated dataset to start real model training — you can swap it for your real EHR or IoT data.
+
+The anomaly detection snippet is minimal but ready to plug in with real vitals streams.
+
+The dashboard is interactive, scalable, and easy to upgrade with more patient features and charts.
+
+The API skeleton helps you deploy the model and serve real-time risk scores.
+
+This architecture balances traditional rigor and forward-thinking innovation — perfectly aligned with your goals.
+
+
+
+
+Here's a modular, production-ready repo structure and a detailed implementation plan for your Predictive Patient Risk Scoring System — complete with CI/CD hints, Docker, and advanced explainability baked in. I’m laying this out like a blueprint for a serious healthcare SaaS MVP.
+
+1. Repo Structure
+graphql
+Copy
+Edit
+predictive-patient-risk/
+│
+├── data/
+│   └── simulated_data.csv          # Simulated or real patient datasets
+│
+├── notebooks/
+│   └── data_exploration.ipynb      # Initial exploration, EDA
+│
+├── src/
+│   ├── data_preprocessing.py       # Preprocessing pipeline
+│   ├── model_training.py           # Model training & evaluation
+│   ├── anomaly_detection.py        # Time-series anomaly detection logic
+│   ├── dashboard.py                # Plotly Dash dashboard app
+│   ├── api.py                     # FastAPI for model serving
+│   ├── explainability.py           # SHAP/LIME explainability functions
+│   └── utils.py                   # Helper functions
+│
+├── tests/
+│   ├── test_preprocessing.py
+│   ├── test_model_training.py
+│   ├── test_api.py
+│   └── test_anomaly_detection.py
+│
+├── Dockerfile                     # Container setup
+├── requirements.txt               # Python dependencies
+├── .github/
+│   └── workflows/
+│       └── ci-cd.yml             # GitHub Actions CI/CD pipeline
+│
+└── README.md
+
+2. Key Files & Highlights
+src/data_preprocessing.py
+Build reusable sklearn pipelines for numeric/categorical data.
+
+Save preprocessors for inference (using joblib).
+
+src/model_training.py
+Train XGBoost with hyperparameter tuning.
+
+Output model and performance reports.
+
+Save model artifacts (model.joblib).
+
+src/anomaly_detection.py
+Functions to ingest time-series vitals.
+
+Isolation Forest or ARIMA-based anomaly detection.
+
+Export anomaly alerts for dashboard integration.
+
+src/dashboard.py
+Interactive Dash app, modular callbacks.
+
+Patient risk scores, vitals trends, alerts.
+
+Can be containerized for standalone deployment.
+
+src/api.py
+FastAPI app exposing /predict endpoint.
+
+Load saved model and preprocessor.
+
+Accept JSON patient data, return risk probability.
+
+Secure with token-based auth for healthcare compliance.
+
+src/explainability.py
+Use SHAP to generate feature importance.
+
+Provide interpretable explanations for clinicians.
+
+Integrate explanations into dashboard & API.
+
+3. Sample Dockerfile
+Dockerfile
+Copy
+Edit
+FROM python:3.10-slim
+
+WORKDIR /app
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY ./src ./src
+
+EXPOSE 8050 8000
+
+CMD ["bash", "-c", "uvicorn src.api:app --host 0.0.0.0 --port 8000 & python src/dashboard.py"]
+4. requirements.txt
+nginx
+Copy
+Edit
+pandas
+numpy
+scikit-learn
+xgboost
+plotly
+dash
+fastapi
+uvicorn
+shap
+joblib
+5. CI/CD with GitHub Actions (ci-cd.yml)
+yaml
+Copy
+Edit
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: 3.10
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run tests
+        run: pytest tests/
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v3
+        with:
+          push: true
+          tags: user/repo:latest
+          # Setup your DockerHub creds as secrets
+
+      - name: Deploy to Kubernetes / Cloud
+        run: |
+          echo "Deploy logic here: kubectl apply or cloud CLI commands"
+
+
+6. Next-level Clinical Trust
+Add SHAP explainability in src/explainability.py — so clinicians can see why a patient’s risk is high (transparent AI, non-black box).
+
+Build alerting mechanism in dashboard and API to notify staff when risk crosses thresholds.
+
+Connect real-time vitals streams via Kafka or MQTT for live anomaly detection.
+
+Summary
+You’re building a full-stack, robust, and scalable predictive healthcare system that’s:
+
+Data-driven with clean, reproducible pipelines
+
+Explainable with feature importance insights
+
+Deployable as API + interactive dashboard
+
+Automated with CI/CD for rapid iteration
+
+Extensible for real-time, IoT-enabled monitoring
+
+
+
+code snippets to kick off each essential module. I’ll keep it tight, clean, and ready to scale, all in Python. Ready to build the backbone of your Predictive Patient Risk Scoring System.
+
+1. src/data_preprocessing.py
+Handles your raw patient data, missing values, categorical encoding, scaling, and outputs the preprocessor object for reuse.
+
+python
+Copy
+Edit
+import pandas as pd
+from sklearn.pipeline import Pipeline
+from sklearn.compose import ColumnTransformer
+from sklearn.preprocessing import StandardScaler, OneHotEncoder
+from sklearn.impute import SimpleImputer
+import joblib
+
+def build_preprocessor(numeric_features, categorical_features):
+    numeric_transformer = Pipeline(steps=[
+        ('imputer', SimpleImputer(strategy='median')),
+        ('scaler', StandardScaler())
+    ])
+
+    categorical_transformer = Pipeline(steps=[
+        ('imputer', SimpleImputer(strategy='most_frequent')),
+        ('onehot', OneHotEncoder(handle_unknown='ignore'))
+    ])
+
+    preprocessor = ColumnTransformer(
+        transformers=[
+            ('num', numeric_transformer, numeric_features),
+            ('cat', categorical_transformer, categorical_features)
+        ])
+
+    return preprocessor
+
+def preprocess_data(df, preprocessor=None, fit=True):
+    # Define your feature columns here (customize per your dataset)
+    numeric_features = ['age', 'bmi', 'heart_rate', 'blood_pressure', 'oxygen_saturation', 'temperature']
+    categorical_features = ['gender', 'smoking_status', 'diagnosis_code']
+
+    if preprocessor is None:
+        preprocessor = build_preprocessor(numeric_features, categorical_features)
+
+    if fit:
+        X = preprocessor.fit_transform(df)
+    else:
+        X = preprocessor.transform(df)
+
+    return X, preprocessor
+
+if __name__ == "__main__":
+    df = pd.read_csv('../data/simulated_data.csv')
+    X, preprocessor = preprocess_data(df, fit=True)
+    joblib.dump(preprocessor, '../models/preprocessor.joblib')
+2. src/model_training.py
+Trains your XGBoost model, evaluates it, and saves it along with performance metrics.
+
+python
+Copy
+Edit
+import pandas as pd
+import joblib
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score, roc_auc_score, classification_report
+import xgboost as xgb
+from data_preprocessing import preprocess_data
+
+def train_model(df):
+    # Assuming target column is 'hospitalization_risk'
+    y = df['hospitalization_risk']
+    X_raw = df.drop(columns=['hospitalization_risk'])
+
+    X, preprocessor = preprocess_data(X_raw, fit=True)
+
+    X_train, X_test, y_train, y_test = train_test_split(X, y, stratify=y, test_size=0.2, random_state=42)
+
+    model = xgb.XGBClassifier(use_label_encoder=False, eval_metric='logloss')
+    model.fit(X_train, y_train)
+
+    y_pred = model.predict(X_test)
+    y_prob = model.predict_proba(X_test)[:, 1]
+
+    print("Accuracy:", accuracy_score(y_test, y_pred))
+    print("ROC AUC:", roc_auc_score(y_test, y_prob))
+    print(classification_report(y_test, y_pred))
+
+    # Save model and preprocessor
+    joblib.dump(model, '../models/xgb_model.joblib')
+    joblib.dump(preprocessor, '../models/preprocessor.joblib')
+
+    return model, preprocessor
+
+if __name__ == "__main__":
+    df = pd.read_csv('../data/simulated_data.csv')
+    train_model(df)
+3. src/anomaly_detection.py
+Basic example of detecting anomalies in time-series vitals (e.g., heart rate) using Isolation Forest.
+
+python
+Copy
+Edit
+import pandas as pd
+from sklearn.ensemble import IsolationForest
+import joblib
+
+def detect_vitals_anomalies(vitals_df):
+    """
+    vitals_df: DataFrame with columns ['patient_id', 'timestamp', 'heart_rate', 'blood_pressure', ...]
+    """
+    # Example: Only use heart_rate for anomaly detection
+    X = vitals_df[['heart_rate']]
+
+    model = IsolationForest(contamination=0.05, random_state=42)
+    model.fit(X)
+
+    vitals_df['anomaly_score'] = model.decision_function(X)
+    vitals_df['anomaly'] = model.predict(X)  # -1 is anomaly, 1 is normal
+
+    return vitals_df
+
+if __name__ == "__main__":
+    vitals_df = pd.read_csv('../data/patient_vitals_timeseries.csv')
+    anomalies_df = detect_vitals_anomalies(vitals_df)
+    anomalies_df.to_csv('../data/vitals_with_anomalies.csv', index=False)
+4. src/api.py
+FastAPI backend serving risk prediction.
+
+python
+Copy
+Edit
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+import joblib
+import numpy as np
+import uvicorn
+
+app = FastAPI()
+
+# Load model and preprocessor
+model = joblib.load('models/xgb_model.joblib')
+preprocessor = joblib.load('models/preprocessor.joblib')
+
+class PatientData(BaseModel):
+    age: float
+    bmi: float
+    heart_rate: float
+    blood_pressure: float
+    oxygen_saturation: float
+    temperature: float
+    gender: str
+    smoking_status: str
+    diagnosis_code: str
+
+@app.post("/predict/")
+def predict_risk(data: PatientData):
+    try:
+        input_df = np.array([[
+            data.age, data.bmi, data.heart_rate, data.blood_pressure,
+            data.oxygen_saturation, data.temperature,
+            data.gender, data.smoking_status, data.diagnosis_code
+        ]])
+
+        # Preprocess input
+        X_processed = preprocessor.transform(input_df)
+
+        risk_prob = model.predict_proba(X_processed)[0][1]
+        risk_class = int(model.predict(X_processed)[0])
+
+        return {"risk_probability": risk_prob, "risk_class": risk_class}
+
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+if __name__ == "__main__":
+    uvicorn.run(app, host="0.0.0.0", port=8000)
+5. src/dashboard.py
+Plotly Dash app skeleton to visualize risk scores and vitals trends.
+
+python
+Copy
+Edit
+import dash
+from dash import dcc, html
+from dash.dependencies import Input, Output
+import pandas as pd
+import plotly.express as px
+import joblib
+
+app = dash.Dash(__name__)
+
+# Load preprocessed data or simulated data
+df = pd.read_csv('data/simulated_data.csv')
+
+app.layout = html.Div([
+    html.H1("Predictive Patient Risk Scoring Dashboard"),
+    dcc.Dropdown(
+        id='patient-dropdown',
+        options=[{'label': pid, 'value': pid} for pid in df['patient_id'].unique()],
+        value=df['patient_id'].unique()[0]
+    ),
+    dcc.Graph(id='risk-score-graph'),
+    dcc.Graph(id='vitals-trends-graph')
+])
+
+@app.callback(
+    [Output('risk-score-graph', 'figure'),
+     Output('vitals-trends-graph', 'figure')],
+    [Input('patient-dropdown', 'value')]
+)
+def update_dashboard(patient_id):
+    patient_data = df[df['patient_id'] == patient_id]
+
+    risk_fig = px.bar(
+        x=patient_data['timestamp'],
+        y=patient_data['risk_score'],
+        title=f"Risk Score Over Time for Patient {patient_id}"
+    )
+
+    vitals_fig = px.line(
+        patient_data,
+        x='timestamp',
+        y=['heart_rate', 'blood_pressure', 'oxygen_saturation'],
+        title=f"Vitals Trends for Patient {patient_id}"
+    )
+
+    return risk_fig, vitals_fig
+
+if __name__ == '__main__':
+    app.run_server(debug=True)
+6. src/explainability.py
+SHAP explainer snippet to generate interpretable insights.
+
+python
+Copy
+Edit
+import shap
+import joblib
+import pandas as pd
+
+def explain_model(model, preprocessor, sample_df):
+    X = preprocessor.transform(sample_df)
+    explainer = shap.TreeExplainer(model)
+    shap_values = explainer.shap_values(X)
+
+    # Plot summary plot (can be saved or returned for dashboard)
+    shap.summary_plot(shap_values, X, feature_names=sample_df.columns)
+
+if __name__ == "__main__":
+    model = joblib.load('models/xgb_model.joblib')
+    preprocessor = joblib.load('models/preprocessor.joblib')
+    df = pd.read_csv('data/simulated_data.csv').drop(columns=['hospitalization_risk'])
+    explain_model(model, preprocessor, df.sample(100))
+
+
+Final notes:
+Simulate or source patient data with timestamps, demographics, vitals, and outcomes.
+
+All paths assume running from repo root. Adjust for your environment.
+
+Extend anomaly detection with multiple vitals and continuous streaming later.
+
+Integrate explainability.py into API and Dashboard for clinician trust.
+
+Use Docker + GitHub Actions to automate tests and deployments.
+
