@@ -1,0 +1,340 @@
+import pandas as pd
+import numpy as np
+from datetime import datetime, timedelta
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.ensemble import IsolationForest
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import confusion_matrix, classification_report
+import joblib # For saving/loading models and scalers
+import os
+
+# --- Configuration ---
+NUM_INVOICES = 1000 # Total number of synthetic invoices
+FRAUD_RATIO = 0.05 # Approximate ratio of simulated fraudulent invoices
+DATA_DIR = 'data_fraud_detector'
+if not os.path.exists(DATA_DIR):
+    os.makedirs(DATA_DIR)
+
+# --- Part 1: Simulate Invoice Data (Simulating OCR Output) ---
+# In a real system, this data would come from an OCR engine like PyTesseract
+# after processing invoice images.
+
+def generate_synthetic_invoice_data(num_invoices, fraud_ratio):
+    """
+    Generates synthetic invoice data, simulating the output of an OCR system.
+    Includes both legitimate and some fraudulent patterns.
+    
+    Returns:
+        pd.DataFrame: DataFrame with extracted invoice fields and a 'is_fraudulent' label.
+    """
+    np.random.seed(42) # for reproducibility
+    
+    invoices = []
+    vendors = [f'Vendor_{i:02d}' for i in range(1, 20)] # 20 unique vendors
+    
+    # Generate legitimate invoices
+    for i in range(int(num_invoices * (1 - fraud_ratio))):
+        invoice_id = f'INV_{np.random.randint(10000, 99999)}'
+        vendor_id = np.random.choice(vendors)
+        invoice_date = datetime(2023, 1, 1) + timedelta(days=np.random.randint(0, 365))
+        
+        num_items = np.random.randint(1, 10)
+        unit_price_avg = np.random.uniform(10, 200)
+        
+        # Simulate line items to ensure subtotal calculation is realistic
+        line_items_total = sum([np.random.randint(1, 5) * np.random.uniform(unit_price_avg * 0.8, unit_price_avg * 1.2) for _ in range(num_items)])
+        
+        subtotal = round(line_items_total, 2)
+        tax_rate = np.random.choice([0.05, 0.08, 0.10], p=[0.3, 0.4, 0.3])
+        tax_amount = round(subtotal * tax_rate, 2)
+        total_amount = round(subtotal + tax_amount, 2)
+        due_date = invoice_date + timedelta(days=np.random.randint(7, 60))
+
+        invoices.append({
+            'invoice_raw_text': f"Invoice from {vendor_id}...", # Placeholder for raw OCR text
+            'invoice_id': invoice_id,
+            'vendor_id': vendor_id,
+            'invoice_date': invoice_date,
+            'due_date': due_date,
+            'subtotal': subtotal,
+            'tax_amount': tax_amount,
+            'total_amount': total_amount,
+            'num_items': num_items,
+            'is_fraudulent': 0 # 0 for legitimate
+        })
+        
+    # Generate simulated fraudulent invoices
+    for i in range(int(num_invoices * fraud_ratio)):
+        fraud_type = np.random.choice(['duplicate_id', 'total_mismatch', 'unusual_amount', 'unusual_vendor_freq'])
+        
+        # Base legitimate invoice data
+        invoice_id = f'INV_{np.random.randint(10000, 99999)}'
+        vendor_id = np.random.choice(vendors)
+        invoice_date = datetime(2023, 1, 1) + timedelta(days=np.random.randint(0, 365))
+        
+        num_items = np.random.randint(1, 10)
+        subtotal = round(np.random.uniform(50, 1000), 2)
+        tax_amount = round(subtotal * np.random.choice([0.05, 0.08, 0.10]), 2)
+        total_amount = round(subtotal + tax_amount, 2)
+        due_date = invoice_date + timedelta(days=np.random.randint(7, 60))
+
+        if fraud_type == 'duplicate_id' and len(invoices) > 0:
+            # Pick a random existing legitimate invoice's ID and vendor
+            existing_invoice = invoices[np.random.randint(0, len(invoices) - 1)]
+            invoice_id = existing_invoice['invoice_id']
+            vendor_id = existing_invoice['vendor_id'] # Same vendor for duplicate ID fraud
+            
+        elif fraud_type == 'total_mismatch':
+            total_amount = round(total_amount * np.random.uniform(1.1, 1.5), 2) # Inflate total
+            
+        elif fraud_type == 'unusual_amount':
+            # Create a very high amount for a common vendor
+            total_amount = round(np.random.uniform(5000, 20000), 2)
+            vendor_id = np.random.choice([v for v in vendors if invoices.count(v) > 5]) # Pick a busy vendor
+        
+        elif fraud_type == 'unusual_vendor_freq' and len(invoices) > 0:
+            # Introduce a new, rare vendor or a vendor with a very high frequency spike
+            if np.random.rand() > 0.5: # New vendor
+                vendor_id = 'NEW_VENDOR_' + str(np.random.randint(100, 999))
+            else: # Artificially inflate frequency by reusing a vendor many times in a short period
+                vendor_id = np.random.choice(vendors) # Use an existing vendor
+
+        invoices.append({
+            'invoice_raw_text': f"Invoice from {vendor_id}...", # Placeholder for raw OCR text
+            'invoice_id': invoice_id,
+            'vendor_id': vendor_id,
+            'invoice_date': invoice_date,
+            'due_date': due_date,
+            'subtotal': subtotal,
+            'tax_amount': tax_amount,
+            'total_amount': total_amount,
+            'num_items': num_items,
+            'is_fraudulent': 1 # 1 for fraudulent
+        })
+            
+    df = pd.DataFrame(invoices)
+    # Sort and reset index for consistency
+    df = df.sort_values(by=['invoice_date', 'invoice_id']).reset_index(drop=True)
+    return df
+
+print(f"Generating {NUM_INVOICES} synthetic invoice data ({FRAUD_RATIO*100}% fraud)...")
+invoice_df = generate_synthetic_invoice_data(NUM_INVOICES, FRAUD_RATIO)
+print("Sample of generated invoice data (simulated OCR output):")
+print(invoice_df.head())
+print(f"\nFraudulent invoices generated: {invoice_df['is_fraudulent'].sum()}")
+
+# --- Part 2: Feature Engineering for Fraud Detection ---
+print("\nEngineering features for fraud detection...")
+
+def engineer_features(df):
+    """
+    Transforms raw invoice data into features suitable for anomaly detection.
+    """
+    df_copy = df.copy()
+
+    # Convert dates to datetime objects
+    df_copy['invoice_date'] = pd.to_datetime(df_copy['invoice_date'])
+    df_copy['due_date'] = pd.to_datetime(df_copy['due_date'])
+
+    # 1. Basic derived financial features
+    df_copy['total_vs_sum_diff'] = df_copy['total_amount'] - (df_copy['subtotal'] + df_copy['tax_amount'])
+    df_copy['tax_ratio'] = df_copy['tax_amount'] / (df_copy['subtotal'] + 1e-6) # Add small epsilon to avoid div by zero
+    df_copy['amount_per_item'] = df_copy['total_amount'] / (df_copy['num_items'] + 1e-6)
+
+    # 2. Date-based features
+    df_copy['days_until_due'] = (df_copy['due_date'] - df_copy['invoice_date']).dt.days
+    df_copy['invoice_day_of_week'] = df_copy['invoice_date'].dt.dayofweek
+    df_copy['invoice_month'] = df_copy['invoice_date'].dt.month
+    df_copy['invoice_day_of_year'] = df_copy['invoice_date'].dt.dayofyear
+
+    # 3. Vendor-specific features (requires historical context)
+    # To simulate historical context, we'll calculate aggregates from the current dataset.
+    # In a real system, you'd use a rolling window or look up actual historical data.
+    
+    # Calculate average amount and frequency per vendor
+    vendor_agg = df_copy.groupby('vendor_id').agg(
+        vendor_avg_amount=('total_amount', 'mean'),
+        vendor_invoice_count=('invoice_id', 'count')
+    ).reset_index()
+    
+    df_copy = pd.merge(df_copy, vendor_agg, on='vendor_id', how='left')
+
+    df_copy['amount_deviation_from_vendor_avg'] = (df_copy['total_amount'] - df_copy['vendor_avg_amount']) / (df_copy['vendor_avg_amount'] + 1e-6)
+    
+    # Vendor frequency as a feature (simple count in this dataset)
+    df_copy['vendor_invoice_frequency_score'] = df_copy['vendor_invoice_count'] # Higher means more frequent
+
+    # 4. Duplicate invoice check (within the same vendor for robustness)
+    df_copy['is_duplicate_invoice_id'] = df_copy.duplicated(subset=['invoice_id', 'vendor_id'], keep=False).astype(int)
+
+    # Drop original date columns as they are transformed, and string identifiers
+    features_df = df_copy.drop(columns=['invoice_raw_text', 'invoice_id', 'vendor_id', 'invoice_date', 'due_date'])
+    
+    # Ensure all features are numeric; drop any remaining non-numeric columns introduced by one-hot encoding if not handled.
+    features_df = features_df.select_dtypes(include=np.number)
+    
+    return features_df
+
+features_df = engineer_features(invoice_df.copy())
+print("Engineered Features DataFrame head:")
+print(features_df.head())
+
+# Separate the 'is_fraudulent' label before scaling for training the unsupervised model
+true_fraud_labels = features_df['is_fraudulent']
+features_for_model = features_df.drop(columns=['is_fraudulent']) # Model is unsupervised, doesn't use this for training
+
+# --- Part 3: Anomaly Detection Model Training (Isolation Forest) ---
+print("\nTraining Anomaly Detection Model (Isolation Forest)...")
+
+# Scale features
+scaler = StandardScaler()
+scaled_features = scaler.fit_transform(features_for_model)
+scaled_features_df = pd.DataFrame(scaled_features, columns=features_for_model.columns)
+
+# Initialize Isolation Forest model
+# contamination: The proportion of outliers in the data set. This is an estimate.
+# In a real scenario, you'd tune this or use domain knowledge.
+isolation_forest_model = IsolationForest(contamination=FRAUD_RATIO, random_state=42, n_jobs=-1)
+
+# Fit the model to the scaled data (unsupervised learning)
+isolation_forest_model.fit(scaled_features)
+
+# Get anomaly scores (lower score indicates higher anomaly likelihood)
+invoice_df['anomaly_score'] = isolation_forest_model.decision_function(scaled_features)
+
+# Predict anomalies (-1 for outliers/anomalies, 1 for inliers/normal)
+# This uses the contamination threshold internally by default
+invoice_df['predicted_anomaly'] = isolation_forest_model.predict(scaled_features)
+
+# Map predicted anomaly to clear labels
+invoice_df['anomaly_label'] = invoice_df['predicted_anomaly'].map({1: 'Normal', -1: 'Anomaly'})
+
+print("Anomaly detection complete.")
+print(f"Detected anomalies: {invoice_df['anomaly_label'].value_counts()}")
+
+# --- Part 4: Model Evaluation (Comparing with True Labels - for analysis only) ---
+# In a true unsupervised setting, you wouldn't have 'is_fraudulent' labels for training.
+# This part is purely for evaluating how well our unsupervised model performs against
+# our simulated 'ground truth' fraud labels.
+
+print("\n--- Model Evaluation Against Simulated True Fraud Labels ---")
+# Convert predicted_anomaly to binary (1 for normal, 0 for anomaly to match is_fraudulent)
+# Or, convert is_fraudulent to -1 (anomaly) and 1 (normal) to match predicted_anomaly.
+# Let's align them to 1 for Normal, -1 for Anomaly
+true_labels_mapped = true_fraud_labels.map({0: 1, 1: -1})
+
+# Calculate confusion matrix
+conf_matrix = confusion_matrix(true_labels_mapped, invoice_df['predicted_anomaly'])
+print("Confusion Matrix:")
+print(conf_matrix)
+
+# Print classification report
+print("\nClassification Report:")
+print(classification_report(true_labels_mapped, invoice_df['predicted_anomaly'], target_names=['Anomaly (-1)', 'Normal (1)']))
+
+# Display flagged invoices with their true status
+flagged_invoices = invoice_df[invoice_df['predicted_anomaly'] == -1]
+print("\nSample of Invoices Flagged as Anomaly:")
+print(flagged_invoices[['invoice_id', 'vendor_id', 'total_amount', 'anomaly_score', 'anomaly_label', 'is_fraudulent']].head(10))
+
+# --- Part 5: Visualization & Reporting ---
+print("\nGenerating visualizations...")
+
+# Distribution of Anomaly Scores
+plt.figure(figsize=(10, 6))
+sns.histplot(invoice_df['anomaly_score'], bins=50, kde=True, color='skyblue')
+plt.axvline(x=isolation_forest_model.threshold_, color='red', linestyle='--', label=f'Decision Threshold ({isolation_forest_model.threshold_:.2f})')
+plt.title('Distribution of Anomaly Scores', fontsize=16)
+plt.xlabel('Anomaly Score', fontsize=12)
+plt.ylabel('Count', fontsize=12)
+plt.legend()
+plt.grid(True, linestyle='--', alpha=0.7)
+plt.tight_layout()
+plt.show()
+
+# Scatter plot of two key features, colored by anomaly status
+# Choosing 'total_amount' and 'total_vs_sum_diff' as illustrative features
+plt.figure(figsize=(12, 8))
+sns.scatterplot(x='total_amount', y='total_vs_sum_diff', hue='anomaly_label', 
+                style='is_fraudulent', # Use true fraud labels for style to see separation
+                palette={'Normal': 'blue', 'Anomaly': 'red'},
+                data=invoice_df, alpha=0.7, s=80)
+plt.title('Invoice Total vs. Sum Difference by Anomaly Status', fontsize=16)
+plt.xlabel('Total Amount', fontsize=12)
+plt.ylabel('Total vs. (Subtotal + Tax) Difference', fontsize=12)
+plt.legend(title='Predicted Status / True Fraud', bbox_to_anchor=(1.05, 1), loc='upper left')
+plt.grid(True, linestyle='--', alpha=0.6)
+plt.tight_layout()
+plt.show()
+
+
+# --- Part 6: Model Saving (Integration Hook) ---
+print("\nSaving model and scaler for deployment...")
+
+model_save_path = os.path.join(DATA_DIR, 'invoice_fraud_detector_model.pkl')
+scaler_save_path = os.path.join(DATA_DIR, 'invoice_fraud_scaler.pkl')
+features_cols_path = os.path.join(DATA_DIR, 'invoice_fraud_features.pkl') # Save feature names for consistent input
+
+joblib.dump(isolation_forest_model, model_save_path)
+joblib.dump(scaler, scaler_save_path)
+joblib.dump(features_for_model.columns.tolist(), features_cols_path) # Save feature order
+
+print(f"Model saved to '{model_save_path}'")
+print(f"Scaler saved to '{scaler_save_path}'")
+print(f"Feature column names saved to '{features_cols_path}'")
+
+# --- Integration Hooks & Further Considerations ---
+print("\n--- Integration Hooks & Further Considerations ---")
+
+# a) OCR Integration:
+print("\n* Real OCR (PyTesseract/Google Vision API):")
+print("  - Users upload invoice images (JPG, PNG, PDF).")
+print("  - Use `OpenCV` for image pre-processing (deskew, binarization, noise reduction).")
+print("  - Use `PyTesseract` to extract raw text from the image.")
+print("  - Develop robust parsing logic (regex, rule-based) to extract structured fields (invoice number, total, vendor etc.) from the OCR text.")
+print("  - For complex layouts, consider more advanced solutions like Google Cloud Vision API's Document AI or Amazon Textract.")
+
+# b) Data Storage:
+print("\n* Database:")
+print("  - Store processed invoice data (extracted fields, engineered features) in a database (e.g., PostgreSQL, MongoDB).")
+print("  - Maintain a historical record per vendor for dynamic feature engineering (e.g., vendor's average invoice amount over last 6 months).")
+
+# c) Deployment (e.g., Streamlit App / Flask API):
+print("\n* Streamlit App:")
+print("  - Create a Streamlit app where users can upload an invoice image.")
+print("  - The app would execute the OCR part, then the feature engineering.")
+print("  - Load the saved `invoice_fraud_detector_model.pkl` and `invoice_fraud_scaler.pkl`.")
+print("  - Make a prediction for the new invoice.")
+print("  - Display extracted data and a clear anomaly status (e.g., 'Normal' or 'Potential Fraud').")
+print("  - Example pseudo-code in Streamlit:")
+print("    ```python")
+print("    # Load resources at app startup (cached)")
+print("    # uploaded_file = st.file_uploader('Upload Invoice Image', type=['png', 'jpg', 'jpeg', 'pdf'])")
+print("    # if uploaded_file is not None:")
+print("    #     # Perform OCR (simulated or real) -> raw_extracted_data_dict")
+print("    #     # Convert raw_extracted_data_dict to pd.DataFrame -> single_invoice_df")
+print("    #     # engineer_features(single_invoice_df) -> single_invoice_features")
+print("    #     # scaled_features = loaded_scaler.transform(single_invoice_features[loaded_feature_columns])")
+print("    #     # anomaly_prediction = loaded_model.predict(scaled_features)[0]")
+print("    #     # anomaly_score = loaded_model.decision_function(scaled_features)[0]")
+print("    #     # st.write(f'Extracted Total: {single_invoice_df['total_amount'].iloc[0]}')")
+print("    #     # st.write(f'Anomaly Status: {anomaly_prediction}') # Map -1/1 to 'Anomaly'/'Normal'")
+print("    ```")
+
+print("\n* REST API:")
+print("  - Deploy a Flask or FastAPI endpoint that accepts invoice images or extracted JSON data.")
+print("  - This API would internally run OCR, feature engineering, and anomaly detection.")
+print("  - Returns the extracted data, anomaly status, and score in a JSON response.")
+
+# d) Alerting Mechanism:
+print("\n* Email/SMS/Internal Notifications:")
+print("  - If an invoice is flagged as an anomaly, trigger an alert to the finance or audit team.")
+print("  - This can be integrated with services like SendGrid, Twilio, or internal Slack/Teams channels.")
+
+# e) Continuous Learning & Feedback Loop:
+print("\n* Human Feedback:")
+print("  - Implement a mechanism for human reviewers to confirm or deny anomalies.")
+print("  - Use this confirmed feedback to retrain and improve the model over time (e.g., a semi-supervised approach or by building a labeled dataset for supervised learning on fraud).")
+
+print("\n--- End of Script ---")
