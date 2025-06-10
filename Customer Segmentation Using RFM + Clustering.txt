@@ -1,0 +1,305 @@
+import pandas as pd
+import numpy as np
+from datetime import datetime, timedelta
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.preprocessing import StandardScaler
+from sklearn.cluster import KMeans
+from sklearn.metrics import silhouette_score
+from mpl_toolkits.mplot3d import Axes3D # For 3D plotting
+
+# --- 1. Data Collection & Preparation (Synthetic Data Generation) ---
+# In a real scenario, you would load your transactional data from a CSV, database, etc.
+# e.g., df = pd.read_csv('your_transactions.csv')
+
+def generate_synthetic_transaction_data(num_customers=1000, num_transactions_per_customer_avg=15, start_date='2022-01-01', end_date='2024-12-31'):
+    """
+    Generates synthetic e-commerce transaction data for demonstration.
+    
+    Args:
+        num_customers (int): Number of unique customers.
+        num_transactions_per_customer_avg (int): Average number of transactions per customer.
+        start_date (str): Start date for transactions.
+        end_date (str): End date for transactions.
+        
+    Returns:
+        pandas.DataFrame: A DataFrame with 'CustomerID', 'OrderDate', 'OrderTotal'
+    """
+    all_transactions = []
+    
+    date_range_start = datetime.strptime(start_date, '%Y-%m-%d')
+    date_range_end = datetime.strptime(end_date, '%Y-%m-%d')
+    total_days = (date_range_end - date_range_start).days
+
+    np.random.seed(42) # for reproducibility
+
+    for customer_id in range(1, num_customers + 1):
+        num_transactions = max(1, int(np.random.normal(num_transactions_per_customer_avg, 5)))
+        
+        for _ in range(num_transactions):
+            # Random date within the range
+            random_days = np.random.randint(0, total_days)
+            order_date = date_range_start + timedelta(days=random_days)
+            
+            # Random order total, with some customers spending more
+            order_total = np.random.uniform(10, 500)
+            
+            # Introduce some variance for high-value customers
+            if np.random.rand() < 0.1: # 10% chance of being a higher spender
+                order_total *= np.random.uniform(1.5, 5)
+
+            all_transactions.append({
+                'CustomerID': f'CUST_{customer_id:04d}',
+                'OrderDate': order_date,
+                'OrderTotal': order_total
+            })
+
+    df = pd.DataFrame(all_transactions)
+    # Ensure OrderDate is datetime type
+    df['OrderDate'] = pd.to_datetime(df['OrderDate'])
+    # Sort by CustomerID and OrderDate
+    df = df.sort_values(by=['CustomerID', 'OrderDate']).reset_index(drop=True)
+    return df
+
+print("Generating synthetic transaction data...")
+transactions_df = generate_synthetic_transaction_data()
+print("Sample of generated data:")
+print(transactions_df.head())
+print(f"\nTotal transactions generated: {len(transactions_df)}")
+
+# --- 2. Calculate RFM Metrics ---
+# Define a reference date for Recency calculation. 
+# It's usually the day after the last transaction in the dataset to ensure Recency > 0.
+snapshot_date = transactions_df['OrderDate'].max() + timedelta(days=1)
+
+print("\nCalculating RFM metrics...")
+
+rfm_df = transactions_df.groupby('CustomerID').agg(
+    Recency=('OrderDate', lambda date: (snapshot_date - date.max()).days),
+    Frequency=('CustomerID', 'count'), # Number of transactions
+    Monetary=('OrderTotal', 'sum')
+).reset_index()
+
+print("RFM DataFrame head:")
+print(rfm_df.head())
+
+# --- 3. Handle Outliers and Skewness (Optional but Recommended) ---
+# RFM values often have skewed distributions. Log transformation can help.
+# Add a small constant to avoid log(0) if Frequency or Monetary can be zero (though not in this synthetic data).
+rfm_df['Frequency_log'] = np.log1p(rfm_df['Frequency'])
+rfm_df['Monetary_log'] = np.log1p(rfm_df['Monetary'])
+# Recency is often inversely related to 'goodness', so sometimes it's transformed,
+# or we just use it directly and understand its inverse relationship.
+# For simplicity, we'll scale Recency directly.
+
+# --- 4. Normalize and Prepare Data for Clustering ---
+# Select the features for clustering. Using log-transformed for Frequency and Monetary.
+X = rfm_df[['Recency', 'Frequency_log', 'Monetary_log']]
+
+# Initialize StandardScaler
+scaler = StandardScaler()
+
+# Fit and transform the data
+X_scaled = scaler.fit_transform(X)
+X_scaled_df = pd.DataFrame(X_scaled, columns=X.columns, index=rfm_df.index)
+
+print("\nScaled RFM data head:")
+print(X_scaled_df.head())
+
+# --- 5. Determine Optimal Number of Clusters (for K-Means) ---
+# Using Elbow Method and Silhouette Score
+
+print("\nDetermining optimal number of clusters...")
+sse = {} # Sum of squared distances
+silhouette_scores = {}
+
+# Test k from 2 to 10
+for k in range(2, 11):
+    kmeans = KMeans(n_clusters=k, random_state=42, n_init=10) # n_init to suppress warning
+    kmeans.fit(X_scaled)
+    sse[k] = kmeans.inertia_ # Sum of squared distances of samples to their closest cluster center
+    
+    # Calculate Silhouette Score
+    if k > 1: # Silhouette score requires at least 2 clusters
+        labels = kmeans.labels_
+        silhouette_scores[k] = silhouette_score(X_scaled, labels)
+
+# Plot Elbow Method
+plt.figure(figsize=(10, 5))
+plt.plot(list(sse.keys()), list(sse.values()), marker='o')
+plt.title('Elbow Method for Optimal K', fontsize=16)
+plt.xlabel('Number of Clusters (K)', fontsize=12)
+plt.ylabel('SSE (Sum of Squared Errors)', fontsize=12)
+plt.xticks(list(sse.keys()))
+plt.grid(True)
+plt.tight_layout()
+plt.show()
+
+# Plot Silhouette Scores
+plt.figure(figsize=(10, 5))
+plt.plot(list(silhouette_scores.keys()), list(silhouette_scores.values()), marker='o', color='green')
+plt.title('Silhouette Score for Optimal K', fontsize=16)
+plt.xlabel('Number of Clusters (K)', fontsize=12)
+plt.ylabel('Silhouette Score', fontsize=12)
+plt.xticks(list(silhouette_scores.keys()))
+plt.grid(True)
+plt.tight_layout()
+plt.show()
+
+# Based on the plots, choose an optimal K. Let's assume K=4 for demonstration.
+# In a real analysis, you would carefully examine these plots.
+OPTIMAL_K = 4 
+print(f"Assuming optimal K = {OPTIMAL_K} for demonstration based on typical patterns.")
+
+# --- 6. Run Clustering Algorithm (K-Means) ---
+print(f"\nRunning K-Means clustering with K = {OPTIMAL_K}...")
+kmeans_final = KMeans(n_clusters=OPTIMAL_K, random_state=42, n_init=10)
+rfm_df['Cluster'] = kmeans_final.fit_predict(X_scaled)
+
+print("RFM DataFrame with assigned clusters head:")
+print(rfm_df.head())
+
+# --- 7. Profile and Interpret Clusters ---
+# Analyze the characteristics of each cluster
+print("\nProfiling and interpreting clusters (average RFM values per cluster):")
+cluster_profiles = rfm_df.groupby('Cluster').agg(
+    AvgRecency=('Recency', 'mean'),
+    AvgFrequency=('Frequency', 'mean'),
+    AvgMonetary=('Monetary', 'mean'),
+    ClusterSize=('CustomerID', 'count')
+).round(2)
+
+print(cluster_profiles)
+
+# Based on the cluster profiles, you can assign meaningful names.
+# This is an example interpretation; actual names depend on your data.
+# Example:
+# Cluster 0: Low Recency, Low Frequency, Low Monetary -> 'Lost Customers'
+# Cluster 1: Low Recency, High Frequency, High Monetary -> 'Champions'
+# Cluster 2: Med Recency, Med Frequency, Med Monetary -> 'Loyal Customers'
+# Cluster 3: High Recency, Low Frequency, Med Monetary -> 'At-Risk Customers'
+
+# --- 8. Visualize Clusters ---
+
+print("\nGenerating cluster visualizations...")
+
+# 2D Scatter plot for R vs F with M as color (using original non-log RFM)
+plt.figure(figsize=(12, 8))
+sns.scatterplot(x='Recency', y='Frequency', hue='Cluster', size='Monetary', sizes=(50, 500),
+                palette='viridis', data=rfm_df, alpha=0.7)
+plt.title('Customer Segments: Recency vs. Frequency (Monetary as Size)', fontsize=16)
+plt.xlabel('Recency (Days Since Last Purchase)', fontsize=12)
+plt.ylabel('Frequency (Number of Purchases)', fontsize=12)
+plt.legend(title='Cluster', bbox_to_anchor=(1.05, 1), loc='upper left')
+plt.grid(True, linestyle='--', alpha=0.6)
+plt.tight_layout()
+plt.show()
+
+# Bar charts for average RFM values per segment
+fig, axes = plt.subplots(1, 3, figsize=(18, 6))
+fig.suptitle('Average RFM Metrics per Customer Segment', fontsize=18)
+
+sns.barplot(x=cluster_profiles.index, y='AvgRecency', data=cluster_profiles, ax=axes[0], palette='viridis')
+axes[0].set_title('Average Recency', fontsize=14)
+axes[0].set_xlabel('Cluster', fontsize=12)
+axes[0].set_ylabel('Days', fontsize=12)
+
+sns.barplot(x=cluster_profiles.index, y='AvgFrequency', data=cluster_profiles, ax=axes[1], palette='viridis')
+axes[1].set_title('Average Frequency', fontsize=14)
+axes[1].set_xlabel('Cluster', fontsize=12)
+axes[1].set_ylabel('Number of Purchases', fontsize=12)
+
+sns.barplot(x=cluster_profiles.index, y='AvgMonetary', data=cluster_profiles, ax=axes[2], palette='viridis')
+axes[2].set_title('Average Monetary', fontsize=14)
+axes[2].set_xlabel('Cluster', fontsize=12)
+axes[2].set_ylabel('Total Spend', fontsize=12)
+
+plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+plt.show()
+
+# 3D Scatter plot of scaled RFM values
+fig = plt.figure(figsize=(10, 8))
+ax = fig.add_subplot(111, projection='3d')
+
+scatter = ax.scatter(X_scaled_df['Recency'], X_scaled_df['Frequency_log'], X_scaled_df['Monetary_log'],
+                     c=rfm_df['Cluster'], cmap='viridis', s=50, alpha=0.7)
+
+ax.set_xlabel('Scaled Recency', fontsize=12)
+ax.set_ylabel('Scaled Log Frequency', fontsize=12)
+ax.set_zlabel('Scaled Log Monetary', fontsize=12)
+ax.set_title('Customer Segments in 3D RFM Space (Scaled)', fontsize=16)
+
+# Add a color bar
+legend1 = ax.legend(*scatter.legend_elements(), title="Cluster", loc="upper left")
+ax.add_artist(legend1)
+
+plt.tight_layout()
+plt.show()
+
+# --- 9. Integration Hooks and Further Considerations ---
+
+print("\n--- Integration Hooks & Further Considerations ---")
+
+# a) Saving the Model and Scaler:
+# You'd save the trained KMeans model and the StandardScaler to disk.
+# This allows you to load them later for new customer segmentation without retraining.
+import joblib # A common library for saving scikit-learn models
+
+model_filename = 'kmeans_rfm_segmentation_model.pkl'
+scaler_filename = 'rfm_scaler.pkl'
+
+joblib.dump(kmeans_final, model_filename)
+joblib.dump(scaler, scaler_filename)
+
+print(f"\nK-Means model saved as '{model_filename}'")
+print(f"Scaler saved as '{scaler_filename}'")
+
+# b) Loading and Segmenting New Customers:
+print("\nExample of how to load the model/scaler and segment new customers:")
+# loaded_kmeans_model = joblib.load(model_filename)
+# loaded_scaler = joblib.load(scaler_filename)
+
+# # Simulate new customer data (e.g., from real-time transactions)
+# new_customer_transactions = pd.DataFrame({
+#     'CustomerID': ['CUST_NEW_01', 'CUST_NEW_02'],
+#     'OrderDate': [datetime.now() - timedelta(days=5), datetime.now() - timedelta(days=60)],
+#     'OrderTotal': [150.0, 30.0]
+# })
+# # You would need enough historical data for new customers to calculate RFM
+# # For demonstration, let's create a dummy RFM for new customers
+# new_rfm_data = pd.DataFrame({
+#     'CustomerID': ['CUST_NEW_01', 'CUST_NEW_02'],
+#     'Recency': [(snapshot_date - new_customer_transactions.loc[0, 'OrderDate']).days, (snapshot_date - new_customer_transactions.loc[1, 'OrderDate']).days],
+#     'Frequency': [5, 1], # Assuming 5 purchases for CUST_NEW_01, 1 for CUST_NEW_02
+#     'Monetary': [750.0, 30.0] # Assuming total spend
+# })
+# # Apply log transform (or other transformations used during training)
+# new_rfm_data['Frequency_log'] = np.log1p(new_rfm_data['Frequency'])
+# new_rfm_data['Monetary_log'] = np.log1p(new_rfm_data['Monetary'])
+#
+# # Select features and scale using the LOADED scaler
+# new_customers_features = new_rfm_data[['Recency', 'Frequency_log', 'Monetary_log']]
+# new_customers_scaled = loaded_scaler.transform(new_customers_features)
+#
+# # Predict clusters for new customers
+# new_customer_clusters = loaded_kmeans_model.predict(new_customers_scaled)
+# new_rfm_data['Cluster'] = new_customer_clusters
+# print("\nNew customers segmented:")
+# print(new_rfm_data[['CustomerID', 'Cluster']])
+
+# c) Database Integration:
+print("\nFor real-world integration, store customer segments in a database (e.g., SQL, NoSQL).")
+print("You might add a 'Segment' column to your customer master data table.")
+print("Periodically update segments (e.g., monthly) as customer behavior evolves.")
+
+# d) Marketing Automation Platforms:
+print("\nIntegrate with marketing automation platforms (e.g., Salesforce Marketing Cloud, HubSpot).")
+print("Export segmented customer lists to these platforms for targeted campaigns (emails, ads, etc.).")
+
+# e) Dashboarding Tools:
+print("\nExport cluster profiles and segmented customer data to tools like Tableau or Power BI.")
+print("This allows marketing and sales teams to easily monitor segments and campaign performance.")
+
+print("\n--- End of Script ---")
+
+
